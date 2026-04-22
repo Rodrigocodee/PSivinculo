@@ -1,27 +1,72 @@
-# Psivinculo
+# 🧠 Psivínculo
 
-## Asaas no backend
+Sistema SaaS para psicólogos, focado em **organização, gestão de pacientes e automação de consultas**, tudo em um só lugar.
 
-O projeto agora possui um backend Node enxuto em `server/` para criar assinaturas recorrentes no Asaas sem expor a chave no frontend.
+---
 
-### Variaveis de ambiente usadas no servidor
+## 🚀 Tecnologias utilizadas
 
-- `ASAAS_API_KEY`
-- `ASAAS_BASE_URL`
-- `ASAAS_WEBHOOK_TOKEN`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_URL` ou `VITE_SUPABASE_URL`
-- `PORT` opcional, padrao `3001`
+- **Frontend:** React + TypeScript + Vite  
+- **Backend:** Node.js  
+- **Banco de dados:** Supabase  
+- **Pagamentos:** Asaas  
 
-Use `.env.example` como referencia segura.
+---
 
-### Rota criada
+## 💡 Sobre o projeto
 
-`POST /api/asaas/create-subscription`
+O Psivínculo foi desenvolvido com o objetivo de:
 
-`POST /api/asaas/webhook`
+- Centralizar a rotina de psicólogos  
+- Automatizar agendamentos e confirmações  
+- Gerenciar pacientes e prontuários  
+- Integrar pagamentos recorrentes de forma segura  
 
-Exemplo de payload:
+---
+
+## 💳 Integração com Asaas (Backend)
+
+O projeto possui um backend em `server/` responsável por:
+
+- Criar assinaturas recorrentes  
+- Processar pagamentos  
+- Receber webhooks do Asaas  
+- Atualizar o status de assinaturas automaticamente  
+
+🔒 **Importante:** a chave da API nunca é exposta no frontend.
+
+---
+
+## 🔐 Variáveis de ambiente
+
+Configure um arquivo `.env` baseado no `.env.example`:
+
+```env
+ASAAS_API_KEY=
+ASAAS_BASE_URL=
+ASAAS_WEBHOOK_TOKEN=
+SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_URL=
+PORT=3001
+```
+
+---
+
+## 📡 Rotas da API
+
+### Criar assinatura
+```http
+POST /api/asaas/create-subscription
+```
+
+### Webhook do Asaas
+```http
+POST /api/asaas/webhook
+```
+
+---
+
+## 📦 Exemplo de payload
 
 ```json
 {
@@ -42,36 +87,72 @@ Exemplo de payload:
 }
 ```
 
-A rota:
+---
 
-- valida o payload no backend
-- calcula `nextDueDate` dinamicamente no momento da compra
-- localiza ou cria o customer no Asaas
-- cria a assinatura mensal recorrente
-- salva a assinatura no banco local logo apos a criacao
-- busca o primeiro pagamento da assinatura
-- retorna `subscription`, `firstPayment`, `paymentUrl` e `pixQrCode` quando aplicavel
+## ⚙️ Funcionalidades da API
 
-O webhook:
+- Validação de payload no backend  
+- Criação automática de clientes no Asaas  
+- Geração de assinaturas recorrentes  
+- Cálculo dinâmico de vencimento  
+- Registro no banco de dados  
+- Retorno de link de pagamento ou QR Code PIX  
 
-- valida o header `asaas-access-token`
-- registra o evento para idempotencia em banco
-- atualiza a assinatura local
-- ativa ou desativa o plano automaticamente conforme o status do pagamento
+---
 
-### Como rodar
+## 🔁 Webhook
 
-- Frontend: `npm run dev`
-- Backend local: `npm run dev:server`
-- Build do app: `npm run build`
-- Servidor Node local com `.env`: `npm run start:local`
+O sistema:
 
-Durante o desenvolvimento, o Vite faz proxy de `/api` para `http://127.0.0.1:3001`.
+- Valida o token de segurança  
+- Evita duplicidade de eventos (idempotência)  
+- Atualiza status da assinatura  
+- Ativa/desativa plano automaticamente  
 
-### Fluxo atual do frontend
+---
 
-- O card de plano leva para `/checkout/:planKey`
-- A tela coleta `nome`, `e-mail` e `CPF/CNPJ`
-- O frontend chama `POST /api/asaas/create-subscription`
-- O segredo do Asaas nunca vai para o cliente
-- O retorno redireciona para `paymentUrl` ou exibe `pixQrCode` quando necessario
+## 🖥️ Como rodar o projeto
+
+```bash
+# Frontend
+npm run dev
+
+# Backend
+npm run dev:server
+
+# Build
+npm run build
+
+# Rodar servidor com .env
+npm run start:local
+```
+
+Durante o desenvolvimento, o Vite faz proxy de `/api` para:
+
+```
+http://127.0.0.1:3001
+```
+
+---
+
+## 🔄 Fluxo do sistema
+
+1. Usuário escolhe um plano  
+2. Vai para `/checkout/:planKey`  
+3. Preenche dados  
+4. Frontend chama a API  
+5. Backend cria assinatura no Asaas  
+6. Usuário é redirecionado para pagamento  
+
+---
+
+## 📌 Status do projeto
+
+🚧 Em desenvolvimento  
+
+---
+
+## 🧑‍💻 Autor
+
+**Rodrigo Ferreira**  
+🔗 https://github.com/Rodrigocodee
