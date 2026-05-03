@@ -150,7 +150,7 @@ export default function PublicPlanCheckoutRedirectPage() {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,hsla(var(--primary),0.18),transparent_24%),radial-gradient(circle_at_100%_0%,hsla(var(--accent),0.14),transparent_28%),linear-gradient(180deg,hsl(225_38%_96%),hsl(34_28%_96%)_58%,hsl(var(--background)))] px-6 py-10">
+    <div className="relative min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,hsla(var(--primary),0.18),transparent_24%),radial-gradient(circle_at_100%_0%,hsla(var(--accent),0.14),transparent_28%),linear-gradient(180deg,hsl(225_38%_96%),hsl(34_28%_96%)_58%,hsl(var(--background)))] px-4 py-8 sm:px-6 sm:py-10">
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div className="absolute left-[-6rem] top-[-5rem] h-72 w-72 rounded-full bg-primary/14 blur-3xl" />
         <div className="absolute bottom-[-7rem] right-[-4rem] h-80 w-80 rounded-full bg-accent/12 blur-3xl" />
@@ -158,7 +158,7 @@ export default function PublicPlanCheckoutRedirectPage() {
 
       <div className="relative mx-auto flex w-full max-w-5xl flex-col gap-6 lg:flex-row">
         <section className="w-full lg:max-w-md">
-          <div className="rounded-[2rem] border border-border/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(247,244,252,0.94))] p-8 shadow-[0_36px_90px_-38px_rgba(79,88,156,0.34)] ring-1 ring-white/70">
+          <div className="rounded-[1.5rem] border border-border/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(247,244,252,0.94))] p-5 shadow-[0_36px_90px_-38px_rgba(79,88,156,0.34)] ring-1 ring-white/70 sm:rounded-[2rem] sm:p-8">
             <div className="inline-flex items-center gap-2 rounded-full border border-border/80 bg-white/80 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-foreground/70 shadow-[0_10px_24px_-20px_rgba(80,92,150,0.45)]">
               <ShieldCheck className="h-3.5 w-3.5 text-primary" />
               Assinatura segura
@@ -208,7 +208,7 @@ export default function PublicPlanCheckoutRedirectPage() {
         </section>
 
         <section className="flex-1">
-          <div className="rounded-[2rem] border border-border/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(247,244,252,0.94))] p-8 shadow-[0_36px_90px_-38px_rgba(79,88,156,0.34)] ring-1 ring-white/70">
+          <div className="rounded-[1.5rem] border border-border/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(247,244,252,0.94))] p-5 shadow-[0_36px_90px_-38px_rgba(79,88,156,0.34)] ring-1 ring-white/70 sm:rounded-[2rem] sm:p-8">
             <div className="max-w-2xl">
               <h2 className="font-heading text-2xl font-bold tracking-[-0.03em] text-foreground">
                 Informe os dados para iniciar a assinatura

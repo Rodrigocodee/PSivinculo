@@ -3,6 +3,7 @@ import { getProfessionalPreviewActionProps } from "@/components/psychologist/Pro
 import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-profile";
 import { toast } from "@/components/ui/sonner";
 import { cadastrarPaciente } from "@/services/pacientes";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 import { ArrowLeft } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -77,8 +78,7 @@ export default function PatientRegister() {
           className="bg-card rounded-xl border border-border p-6 space-y-6"
           onSubmit={handleSubmit}
           {...getProfessionalPreviewActionProps({
-            description:
-              "O cadastro de pacientes fica liberado assim que sua area profissional for ativada. Escolha um plano para seguir sem bloqueios.",
+            description: PREVIEW_FEATURE_LOCK_MESSAGE,
           })}
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

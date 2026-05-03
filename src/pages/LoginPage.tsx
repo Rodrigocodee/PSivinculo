@@ -99,7 +99,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,hsla(var(--primary),0.18),transparent_24%),radial-gradient(circle_at_100%_0%,hsla(var(--accent),0.18),transparent_28%),linear-gradient(180deg,hsl(225_38%_96%),hsl(34_28%_96%)_56%,hsl(var(--background)))]">
+    <div className="relative min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,hsla(var(--primary),0.18),transparent_24%),radial-gradient(circle_at_100%_0%,hsla(var(--accent),0.18),transparent_28%),linear-gradient(180deg,hsl(225_38%_96%),hsl(34_28%_96%)_56%,hsl(var(--background)))]">
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div className="absolute left-[-7rem] top-[-5rem] h-72 w-72 rounded-full bg-primary/14 blur-3xl" />
         <div className="absolute bottom-[-7rem] right-[-4rem] h-80 w-80 rounded-full bg-accent/12 blur-3xl" />
@@ -248,7 +248,7 @@ export default function LoginPage() {
           </div>
         </section>
 
-        <section className="relative flex flex-1 items-center justify-center px-6 py-10 lg:px-12">
+        <section className="relative flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-10 lg:px-12">
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,hsla(var(--primary),0.16),transparent_32%),radial-gradient(circle_at_85%_18%,hsla(var(--accent),0.14),transparent_24%),linear-gradient(180deg,rgba(255,255,255,0.28),transparent_42%)]"
@@ -272,7 +272,7 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="relative overflow-hidden rounded-[2rem] border border-border/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(247,244,252,0.94))] p-8 backdrop-blur-xl premium-shadow shadow-[0_36px_90px_-38px_rgba(79,88,156,0.34)] ring-1 ring-white/70 sm:p-10">
+            <div className="relative overflow-hidden rounded-[1.5rem] border border-border/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(247,244,252,0.94))] p-5 backdrop-blur-xl premium-shadow shadow-[0_36px_90px_-38px_rgba(79,88,156,0.34)] ring-1 ring-white/70 sm:rounded-[2rem] sm:p-10">
               <div
                 aria-hidden
                 className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-[radial-gradient(circle_at_top,hsla(var(--primary),0.22),transparent_62%)]"

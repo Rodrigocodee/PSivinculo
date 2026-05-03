@@ -3,7 +3,6 @@ import { getCurrentPaciente, type CurrentPacienteContext } from "@/services/curr
 import { resolvePsychologistNameById } from "@/services/psychologistLookup";
 
 type DashboardConsultaRow = Record<string, unknown>;
-type DashboardPagamentoRow = Record<string, unknown>;
 
 export type PatientDashboardAppointment = {
   id: string;
@@ -15,16 +14,17 @@ export type PatientDashboardAppointment = {
 
 export type PatientDashboardPayment = {
   id: string;
-  amount: number;
-  reference: string;
-  date: string | null;
+  dateTime: string | null;
+  psychologistName: string;
+  amount: number | null;
   status: string;
+  paymentUrl: string | null;
 };
 
 export type PatientDashboardData = {
   patient: CurrentPacienteContext;
   nextAppointment: PatientDashboardAppointment | null;
-  pendingPayment: PatientDashboardPayment | null;
+  pendingPayments: PatientDashboardPayment[];
   recentHistory: PatientDashboardAppointment[];
   hasLinkedPatientRecord: boolean;
 };
@@ -41,7 +41,7 @@ function pickString(source: Record<string, unknown> | null | undefined, keys: st
 }
 
 function getPossibleNumber(source: Record<string, unknown> | null | undefined, keys: string[]) {
-  if (!source) return 0;
+  if (!source) return null;
 
   for (const key of keys) {
     const value = source[key];
@@ -55,20 +55,19 @@ function getPossibleNumber(source: Record<string, unknown> | null | undefined, k
     }
   }
 
-  return 0;
+  return null;
 }
 
-function normalizePaymentStatus(value: unknown) {
-  if (typeof value !== "string") return "";
-  return value.trim().toLowerCase();
-}
-
-function isPendingPaymentStatus(value: unknown) {
-  return ["pendente", "pending", "aberto", "open"].includes(normalizePaymentStatus(value));
+function normalizeStatus(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
 function isCancelledAppointmentStatus(value: unknown) {
-  return ["cancelada", "recusada"].includes(String(value || "").trim().toLowerCase());
+  return ["cancelada", "recusada"].includes(normalizeStatus(value));
+}
+
+function isAwaitingPaymentStatus(value: unknown) {
+  return normalizeStatus(value) === "aguardando_pagamento";
 }
 
 function parseValidDate(value: string | null | undefined) {
@@ -79,31 +78,23 @@ function parseValidDate(value: string | null | undefined) {
 
 function getAppointmentSessionType(consulta: DashboardConsultaRow) {
   return (
-    pickString(consulta, ["modalidade_consulta", "tipo_sessao", "session_type", "tipo_atendimento", "modalidade", "type"]) ||
-    null
+    pickString(consulta, [
+      "modalidade_consulta",
+      "tipo_sessao",
+      "session_type",
+      "tipo_atendimento",
+      "modalidade",
+      "type",
+    ]) || null
   );
 }
 
-function getPaymentDate(pagamento: DashboardPagamentoRow) {
+function getConsultationPaymentUrl(consulta: DashboardConsultaRow) {
   return (
-    pickString(pagamento, ["data_vencimento", "data_pagamento", "data", "created_at", "updated_at"]) ||
+    pickString(consulta, ["asaas_invoice_url"]) ||
+    pickString(consulta, ["asaas_bank_slip_url"]) ||
     null
   );
-}
-
-function getPaymentReference(pagamento: DashboardPagamentoRow) {
-  const explicitReference =
-    pickString(pagamento, ["reference", "descricao", "description", "titulo", "nome_consulta"]) ||
-    null;
-
-  if (explicitReference) return explicitReference;
-
-  const paymentDate = parseValidDate(getPaymentDate(pagamento));
-  if (paymentDate) {
-    return `Consulta de ${paymentDate.toLocaleDateString("pt-BR")}`;
-  }
-
-  return "Referencia nao informada";
 }
 
 function mapAppointment(
@@ -116,6 +107,20 @@ function mapAppointment(
     status: pickString(consulta, ["status"]) || "",
     sessionType: getAppointmentSessionType(consulta),
     psychologistName,
+  };
+}
+
+function mapPendingPayment(
+  consulta: DashboardConsultaRow,
+  psychologistName: string,
+): PatientDashboardPayment {
+  return {
+    id: pickString(consulta, ["id"]) || crypto.randomUUID(),
+    dateTime: pickString(consulta, ["data_consulta"]) || null,
+    psychologistName,
+    amount: getPossibleNumber(consulta, ["valor_consulta"]),
+    status: pickString(consulta, ["status_pagamento"]) || "",
+    paymentUrl: getConsultationPaymentUrl(consulta),
   };
 }
 
@@ -148,7 +153,7 @@ export async function fetchPatientDashboardData(): Promise<PatientDashboardData>
     return {
       patient,
       nextAppointment: null,
-      pendingPayment: null,
+      pendingPayments: [],
       recentHistory: [],
       hasLinkedPatientRecord: patient.isLinked,
     };
@@ -172,10 +177,12 @@ export async function fetchPatientDashboardData(): Promise<PatientDashboardData>
       .order("data_consulta", { ascending: false })
       .limit(12),
     supabase
-      .from("pagamentos")
+      .from("consultas")
       .select("*")
       .eq("paciente_id", patient.patientId)
-      .limit(8),
+      .eq("status_pagamento", "aguardando_pagamento")
+      .order("data_consulta", { ascending: true })
+      .limit(12),
   ]);
 
   if (nextAppointmentResult.error) throw nextAppointmentResult.error;
@@ -189,13 +196,15 @@ export async function fetchPatientDashboardData(): Promise<PatientDashboardData>
   const recentHistoryRows = ((recentHistoryResult.data ?? []) as DashboardConsultaRow[]).filter(
     (consulta) => !isCancelledAppointmentStatus(consulta.status),
   );
-  const pendingPaymentRows = ((pendingPaymentsResult.data ?? []) as DashboardPagamentoRow[]).filter(
-    (pagamento) => isPendingPaymentStatus(pagamento.status),
-  );
+  const pendingPaymentRows = ((pendingPaymentsResult.data ?? []) as DashboardConsultaRow[])
+    .filter((consulta) => !isCancelledAppointmentStatus(consulta.status))
+    .filter((consulta) => isAwaitingPaymentStatus(consulta.status_pagamento))
+    .filter((consulta) => Boolean(getConsultationPaymentUrl(consulta)));
 
   const psychologistIds = new Set<string>(
     [patient.psychologistId, pickString(nextAppointmentRow, ["psicologo_id"])]
       .concat(recentHistoryRows.map((consulta) => pickString(consulta, ["psicologo_id"])))
+      .concat(pendingPaymentRows.map((consulta) => pickString(consulta, ["psicologo_id"])))
       .filter(Boolean),
   );
 
@@ -218,30 +227,20 @@ export async function fetchPatientDashboardData(): Promise<PatientDashboardData>
   const nextAppointment = nextAppointmentRow
     ? mapAppointment(
         nextAppointmentRow,
-        psychologistNameById.get(pickString(nextAppointmentRow, ["psicologo_id"])) || "Psicologo(a)",
+        psychologistNameById.get(pickString(nextAppointmentRow, ["psicologo_id"])) ||
+          "Psicologo(a)",
       )
     : null;
-
-  const pendingPayment = pendingPaymentRows
-    .slice()
-    .sort((left, right) => {
-      const leftTime = parseValidDate(getPaymentDate(left))?.getTime() ?? Number.MAX_SAFE_INTEGER;
-      const rightTime = parseValidDate(getPaymentDate(right))?.getTime() ?? Number.MAX_SAFE_INTEGER;
-      return leftTime - rightTime;
-    })[0];
 
   return {
     patient,
     nextAppointment,
-    pendingPayment: pendingPayment
-      ? {
-          id: pickString(pendingPayment, ["id"]) || crypto.randomUUID(),
-          amount: getPossibleNumber(pendingPayment, ["valor", "amount", "valor_pago", "total", "preco"]),
-          reference: getPaymentReference(pendingPayment),
-          date: getPaymentDate(pendingPayment),
-          status: pickString(pendingPayment, ["status"]) || "",
-        }
-      : null,
+    pendingPayments: pendingPaymentRows.map((consulta) =>
+      mapPendingPayment(
+        consulta,
+        psychologistNameById.get(pickString(consulta, ["psicologo_id"])) || "Psicologo(a)",
+      ),
+    ),
     recentHistory: sortRecentHistory(recentHistoryRows)
       .slice(0, 4)
       .map((consulta) =>

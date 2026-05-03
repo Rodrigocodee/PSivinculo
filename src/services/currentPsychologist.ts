@@ -951,7 +951,12 @@ export async function saveCurrentPsychologistProfessionalProfile(
     null,
     context.usuariosRecord?.row || context.record?.row || null,
   );
-  const hasProfessionalAccess = psychologistClinicAccess.isClinicInvitedPsychologist;
+  const hasProfessionalAccess =
+    psychologistClinicAccess.isClinicInvitedPsychologist ||
+    resolveCurrentPsychologistProfessionalAccess(
+      (context.user.user_metadata || {}) as Record<string, unknown>,
+      context.usuariosRecord?.row || context.record?.row || null,
+    );
 
   if (context.record) {
     const recordPayload = buildProfessionalProfilePayload(context.record.row, {

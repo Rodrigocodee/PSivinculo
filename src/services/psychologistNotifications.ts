@@ -101,3 +101,15 @@ export async function markPsychologistNotificationsAsRead(notificationIds: strin
 
   if (error) throw error;
 }
+
+export async function markAllPsychologistNotificationsAsRead() {
+  const { error } = await supabase.rpc("mark_all_my_notifications_as_read");
+
+  if (error) throw error;
+}
+
+export async function clearPsychologistNotifications() {
+  const { error } = await supabase.rpc("clear_my_notifications");
+
+  if (error) throw error;
+}

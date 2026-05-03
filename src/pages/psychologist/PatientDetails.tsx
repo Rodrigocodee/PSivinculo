@@ -1,11 +1,26 @@
 import { AppLayout } from "@/components/layout/AppLayout";
+import { getProfessionalPreviewActionProps } from "@/components/psychologist/ProfessionalPreview";
+import { toast } from "@/components/ui/sonner";
 import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-profile";
 import { formatCpf, formatPhone } from "@/lib/formatters";
 import { listarConsultasPorPaciente } from "@/services/consultas";
-import { buscarPacientePorId } from "@/services/pacientes";
+import { isValidOnlineSessionLinkInput } from "@/services/onlineSessionLinks";
+import { buscarPacientePorId, salvarLinksSalaOnlinePaciente } from "@/services/pacientes";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, FileText, Calendar, DollarSign, Phone, Mail, MapPin, AlertCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  FileText,
+  Calendar,
+  DollarSign,
+  Phone,
+  Mail,
+  MapPin,
+  AlertCircle,
+  Video,
+  Loader2,
+} from "lucide-react";
 
 type PacienteDetalhe = {
   id: string;
@@ -18,6 +33,9 @@ type PacienteDetalhe = {
   data_nascimento: string | null;
   observacoes: string | null;
   ativo: boolean | null;
+  link_sessao_online: string | null;
+  link_sessao_online_paciente: string | null;
+  link_sessao_online_psicologo: string | null;
 };
 
 type ConsultaPaciente = {
@@ -34,10 +52,32 @@ export default function PatientDetails() {
   const [appointments, setAppointments] = useState<ConsultaPaciente[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [patientRoomLink, setPatientRoomLink] = useState("");
+  const [psychologistRoomLink, setPsychologistRoomLink] = useState("");
+  const [hasEditedRoomLinks, setHasEditedRoomLinks] = useState(false);
+  const [isSavingRoomLinks, setIsSavingRoomLinks] = useState(false);
   const psychologistName = profile?.fullName?.trim() || "Profissional";
+
+  function resolveInitialRoomLinks(currentPatient: PacienteDetalhe | null) {
+    const legacyRoomLink = currentPatient?.link_sessao_online?.trim() || "";
+    const resolvedPatientRoomLink =
+      currentPatient?.link_sessao_online_paciente?.trim() || legacyRoomLink;
+    const resolvedPsychologistRoomLink =
+      currentPatient?.link_sessao_online_psicologo?.trim() ||
+      resolvedPatientRoomLink ||
+      legacyRoomLink;
+
+    return {
+      patientLink: resolvedPatientRoomLink,
+      psychologistLink: resolvedPsychologistRoomLink,
+    };
+  }
 
   useEffect(() => {
     async function carregarPaciente() {
+      setIsLoading(true);
+      setHasEditedRoomLinks(false);
+
       if (!id) {
         setNotFound(true);
         setIsLoading(false);
@@ -72,6 +112,66 @@ export default function PatientDetails() {
 
     carregarPaciente();
   }, [id]);
+
+  useEffect(() => {
+    if (hasEditedRoomLinks) {
+      return;
+    }
+
+    const initialRoomLinks = resolveInitialRoomLinks(patient);
+    setPatientRoomLink(initialRoomLinks.patientLink);
+    setPsychologistRoomLink(initialRoomLinks.psychologistLink);
+  }, [
+    patient?.link_sessao_online,
+    patient?.link_sessao_online_paciente,
+    patient?.link_sessao_online_psicologo,
+    hasEditedRoomLinks,
+  ]);
+
+  async function handleSaveRoomLinks() {
+    if (!patient) {
+      toast.error("Nao foi possivel localizar o paciente para salvar os links da sala online.");
+      return;
+    }
+
+    const trimmedPatientRoomLink = patientRoomLink.trim();
+    const trimmedPsychologistRoomLink = psychologistRoomLink.trim();
+
+    if (!isValidOnlineSessionLinkInput(trimmedPatientRoomLink)) {
+      toast.error("Informe um link valido com http:// ou https://.");
+      return;
+    }
+
+    if (!isValidOnlineSessionLinkInput(trimmedPsychologistRoomLink)) {
+      toast.error("Informe um link valido com http:// ou https://.");
+      return;
+    }
+
+    setIsSavingRoomLinks(true);
+
+    try {
+      const savedPatient = await salvarLinksSalaOnlinePaciente(
+        patient.id,
+        {
+          patientLink: trimmedPatientRoomLink,
+          psychologistLink: trimmedPsychologistRoomLink,
+        },
+      );
+
+      setPatient(savedPatient as PacienteDetalhe);
+      const savedRoomLinks = resolveInitialRoomLinks(savedPatient as PacienteDetalhe);
+      setPatientRoomLink(savedRoomLinks.patientLink);
+      setPsychologistRoomLink(savedRoomLinks.psychologistLink);
+      setHasEditedRoomLinks(false);
+      toast.success("Links da sala online deste paciente salvos com sucesso.");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Nao foi possivel salvar os links da sala online.";
+      toast.error(message);
+    } finally {
+      setIsSavingRoomLinks(false);
+    }
+  }
 
   if (isLoading) {
     return (
@@ -193,6 +293,100 @@ export default function PatientDetails() {
                   </span>
                 </div>
               )) : <p className="text-sm text-muted-foreground">Nenhum pagamento registrado.</p>}
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-card rounded-xl border border-border p-5">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-xl bg-primary/10 p-2 text-primary">
+              <Video className="w-4 h-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="font-heading font-semibold text-foreground">Sala online privada deste paciente</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Esses links sao privados e serao usados apenas nos lembretes enviados 1h antes da consulta online.
+              </p>
+
+              <div className="mt-4 space-y-3">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    Link do paciente/convidado
+                  </label>
+                  <input
+                    type="url"
+                    inputMode="url"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={patientRoomLink}
+                    onChange={(event) => {
+                      setPatientRoomLink(event.target.value);
+                      setHasEditedRoomLinks(true);
+                    }}
+                    placeholder="Cole aqui o link que o paciente recebera 1h antes da consulta"
+                    className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
+                  />
+                  {patientRoomLink.trim() && !isValidOnlineSessionLinkInput(patientRoomLink) ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      Informe um link valido com http:// ou https://.
+                    </p>
+                  ) : null}
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    Link do psicologo/admin
+                  </label>
+                  <input
+                    type="url"
+                    inputMode="url"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={psychologistRoomLink}
+                    onChange={(event) => {
+                      setPsychologistRoomLink(event.target.value);
+                      setHasEditedRoomLinks(true);
+                    }}
+                    placeholder="Cole aqui o link de criador/host que o psicologo recebera 1h antes da consulta"
+                    className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
+                  />
+                  {psychologistRoomLink.trim() && !isValidOnlineSessionLinkInput(psychologistRoomLink) ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      Informe um link valido com http:// ou https://.
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleSaveRoomLinks}
+                    disabled={
+                      isSavingRoomLinks ||
+                      (
+                        patientRoomLink.trim().length > 0 &&
+                        !isValidOnlineSessionLinkInput(patientRoomLink)
+                      ) ||
+                      (
+                        psychologistRoomLink.trim().length > 0 &&
+                        !isValidOnlineSessionLinkInput(psychologistRoomLink)
+                      )
+                    }
+                    {...getProfessionalPreviewActionProps({
+                      title: "Ative sua assinatura para salvar links da sala.",
+                      description: PREVIEW_FEATURE_LOCK_MESSAGE,
+                    })}
+                    className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70 gradient-primary"
+                  >
+                    {isSavingRoomLinks ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Video className="w-4 h-4" />
+                    )}
+                    {isSavingRoomLinks ? "Salvando..." : "Salvar links da sala"}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

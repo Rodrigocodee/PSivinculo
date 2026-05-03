@@ -87,6 +87,8 @@ export default function RegisterPage() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSubmitting) return;
+
     setErrorMessage("");
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -163,7 +165,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+    <div className="flex min-h-screen items-center justify-center overflow-x-hidden bg-background p-4 sm:p-6">
       <div className="w-full max-w-lg">
         <div className="mb-8 flex items-center justify-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg gradient-primary">
@@ -172,7 +174,7 @@ export default function RegisterPage() {
           <span className="font-heading text-xl font-bold text-foreground">Psivinculo</span>
         </div>
 
-        <div className="rounded-2xl border border-border bg-card p-8">
+        <div className="rounded-2xl border border-border bg-card p-5 sm:p-8">
           <h1 className="text-center font-heading text-2xl font-bold text-foreground">Criar conta de psicologo</h1>
           <p className="mt-2 text-center text-sm text-muted-foreground">
             Cadastre-se para entrar na area profissional. Se voce recebeu convite da clinica, use o codigo para vincular o acesso automaticamente.

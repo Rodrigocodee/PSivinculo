@@ -16,6 +16,11 @@ import {
   type AppointmentModality,
   type CurrentPsychologistConsultationSettings,
 } from "@/services/psychologistConsultationSettings";
+import {
+  getPsychologistAvailabilityById,
+  validateAppointmentAvailability,
+  type PsychologistAvailabilitySettings,
+} from "@/services/psychologistAvailability";
 
 type ConsultaRow = Record<string, unknown>;
 type ConsultationMutationApiResponse = {
@@ -25,9 +30,9 @@ type ConsultationMutationApiResponse = {
 };
 
 const PATIENT_APPOINTMENT_SELECT_BASE =
-  "id, paciente_id, psicologo_id, data_consulta, status, observacoes, modalidade_consulta, valor_consulta, duracao_consulta_min, local_presencial";
+  "id, paciente_id, psicologo_id, data_consulta, status, observacoes, modalidade_consulta, valor_consulta, duracao_consulta_min, local_presencial, asaas_payment_id, asaas_invoice_url, asaas_bank_slip_url, status_pagamento";
 const PATIENT_APPOINTMENT_SELECT_WITH_RESPONSE =
-  "id, paciente_id, psicologo_id, data_consulta, data_consulta_solicitada_original, respondida_em, ultima_resposta_por, status, observacoes, modalidade_consulta, valor_consulta, duracao_consulta_min, local_presencial";
+  "id, paciente_id, psicologo_id, data_consulta, data_consulta_solicitada_original, respondida_em, ultima_resposta_por, status, observacoes, modalidade_consulta, valor_consulta, duracao_consulta_min, local_presencial, asaas_payment_id, asaas_invoice_url, asaas_bank_slip_url, status_pagamento";
 const PATIENT_APPOINTMENT_INSERT_SELECT_BASE =
   "id, paciente_id, psicologo_id, clinica_id, data_consulta, status, observacoes, modalidade_consulta, valor_consulta, duracao_consulta_min, local_presencial, created_at";
 const PATIENT_APPOINTMENT_INSERT_SELECT_WITH_RESPONSE =
@@ -48,6 +53,9 @@ export type PatientAppointment = {
   consultationPrice: number | null;
   consultationDurationMinutes: number | null;
   presentialLocation: string | null;
+  paymentStatus: string | null;
+  paymentUrl: string | null;
+  asaasPaymentId: string | null;
   isUpcoming: boolean;
 };
 
@@ -57,6 +65,7 @@ export type PatientAppointmentsData = {
   hasLinkedPatientRecord: boolean;
   canRequestAppointment: boolean;
   consultationSettings: CurrentPsychologistConsultationSettings | null;
+  availabilitySettings: PsychologistAvailabilitySettings | null;
 };
 
 export type PatientAppointmentRequestInput = {
@@ -115,6 +124,11 @@ function logPatientAppointmentDebug(label: string, payload: Record<string, unkno
   console.info(`[Psivinculo][patient-appointments][${label}]`, payload);
 }
 
+function logConsultationValueDebug(payload: Record<string, unknown>) {
+  if (!import.meta.env.DEV) return;
+  console.info("[Psivinculo][valor-consulta]", payload);
+}
+
 function sortAppointments(rows: ConsultaRow[]) {
   const now = Date.now();
 
@@ -147,6 +161,8 @@ function mapAppointment(consulta: ConsultaRow, psychologistName: string): Patien
   const parsedDate = parseValidDate(dateTime);
   const consultationPriceRaw = consulta.valor_consulta;
   const consultationDurationRaw = consulta.duracao_consulta_min;
+  const invoiceUrl = pickString(consulta, ["asaas_invoice_url"]);
+  const bankSlipUrl = pickString(consulta, ["asaas_bank_slip_url"]);
 
   return {
     id: pickString(consulta, ["id"]) || crypto.randomUUID(),
@@ -176,6 +192,9 @@ function mapAppointment(consulta: ConsultaRow, psychologistName: string): Patien
           ? Number(consultationDurationRaw)
           : null,
     presentialLocation: pickString(consulta, ["local_presencial"]) || null,
+    paymentStatus: pickString(consulta, ["status_pagamento"]) || null,
+    paymentUrl: invoiceUrl || bankSlipUrl || null,
+    asaasPaymentId: pickString(consulta, ["asaas_payment_id"]) || null,
     isUpcoming: (parsedDate?.getTime() ?? 0) >= Date.now(),
   };
 }
@@ -195,11 +214,15 @@ export async function fetchPatientAppointmentsData(): Promise<PatientAppointment
       hasLinkedPatientRecord: patient.isLinked,
       canRequestAppointment: patient.isLinked,
       consultationSettings: null,
+      availabilitySettings: null,
     };
   }
 
   const consultationSettings = linkedPsychologistId
     ? await getPsychologistConsultationSettingsById(linkedPsychologistId)
+    : null;
+  const availabilitySettings = linkedPsychologistId
+    ? await getPsychologistAvailabilityById(linkedPsychologistId)
     : null;
 
   let { data, error } = await supabase
@@ -264,6 +287,7 @@ export async function fetchPatientAppointmentsData(): Promise<PatientAppointment
     hasLinkedPatientRecord: patient.isLinked,
     canRequestAppointment: Boolean(patient.isLinked && linkedPsychologistId),
     consultationSettings,
+    availabilitySettings,
   };
 }
 
@@ -315,13 +339,19 @@ export async function requestPatientAppointment(input: PatientAppointmentRequest
   const consultationSettings = linkedPsychologistId
     ? await getPsychologistConsultationSettingsById(linkedPsychologistId)
     : null;
+  const availabilitySettings = linkedPsychologistId
+    ? await getPsychologistAvailabilityById(linkedPsychologistId)
+    : null;
   const allowsPresential = consultationSettings?.attendsPresential ?? true;
   const allowsOnline = consultationSettings?.attendsOnline ?? true;
   const consultationPrice =
     typeof consultationSettings?.consultationPrice === "number"
       ? Number(consultationSettings.consultationPrice.toFixed(2))
       : null;
-  const consultationDurationMinutes = consultationSettings?.consultationDurationMinutes ?? null;
+  const consultationDurationMinutes =
+    consultationSettings?.consultationDurationMinutes ??
+    availabilitySettings?.consultationDurationMinutes ??
+    null;
   let resolvedModality: AppointmentModality | null = null;
 
   if (allowsPresential && allowsOnline) {
@@ -338,6 +368,20 @@ export async function requestPatientAppointment(input: PatientAppointmentRequest
 
   if (!resolvedModality) {
     throw new Error("Este psicologo ainda nao possui uma modalidade de atendimento disponivel.");
+  }
+
+  if (availabilitySettings) {
+    const availabilityValidation = validateAppointmentAvailability({
+      dateKey: requestedDate,
+      time: requestedTime,
+      schedule: availabilitySettings.schedule,
+      consultationDurationMinutes:
+        consultationDurationMinutes ?? availabilitySettings.consultationDurationMinutes,
+    });
+
+    if (!availabilityValidation.ok) {
+      throw new Error(availabilityValidation.message);
+    }
   }
 
   const presentialLocation =
@@ -419,6 +463,15 @@ export async function requestPatientAppointment(input: PatientAppointmentRequest
       appointmentId: isRecord(appointment) ? pickString(appointment, ["id"]) : null,
       dataConsulta: isRecord(appointment) ? pickString(appointment, ["data_consulta"]) : dataConsulta,
       status: isRecord(appointment) ? pickString(appointment, ["status"]) : payload.status,
+    });
+
+    logConsultationValueDebug({
+      origem: "criacao",
+      consultaId: isRecord(appointment) ? pickString(appointment, ["id"]) || null : null,
+      psicologoId: linkedPsychologistId,
+      valorConsultaNaConsulta: null,
+      valorConsultaNoUsuario: consultationPrice,
+      valorFinalUsado: consultationPrice,
     });
 
     return {

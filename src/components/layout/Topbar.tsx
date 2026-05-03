@@ -54,6 +54,7 @@ export function Topbar({ userName, userRole, onMenuToggle }: TopbarProps) {
   const { appUser } = useAuth();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [isProcessingNotifications, setIsProcessingNotifications] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<PsychologistGlobalSearchResult[]>([]);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -71,11 +72,15 @@ export function Topbar({ userName, userRole, onMenuToggle }: TopbarProps) {
   const {
     data: psychologistNotifications = [],
     isLoading: isLoadingPsychologistNotifications,
+    clearAll: clearPsychologistNotifications,
+    markAllAsRead: markAllPsychologistNotificationsAsRead,
     markAsRead: markPsychologistNotificationsAsRead,
   } = usePsychologistNotifications(isPsychologist);
   const {
     data: patientNotifications = [],
     isLoading: isLoadingPatientNotifications,
+    clearAll: clearPatientNotifications,
+    markAllAsRead: markAllPatientNotificationsAsRead,
     markAsRead: markPatientNotificationsAsRead,
   } = usePatientNotifications(isPatient);
 
@@ -221,6 +226,47 @@ export function Topbar({ userName, userRole, onMenuToggle }: TopbarProps) {
     }
   }
 
+  async function handleMarkAllNotificationsAsRead() {
+    if (isProcessingNotifications || unreadCount === 0) return;
+
+    setIsProcessingNotifications(true);
+    try {
+      if (isPsychologist) {
+        await markAllPsychologistNotificationsAsRead();
+      } else if (isPatient) {
+        await markAllPatientNotificationsAsRead();
+      }
+
+      toast.success("Notificacoes marcadas como lidas.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Nao foi possivel marcar as notificacoes como lidas.";
+      toast.error(message);
+    } finally {
+      setIsProcessingNotifications(false);
+    }
+  }
+
+  async function handleClearNotifications() {
+    if (isProcessingNotifications || notifications.length === 0) return;
+    if (!window.confirm("Limpar todas as notificacoes? Esta acao nao pode ser desfeita.")) return;
+
+    setIsProcessingNotifications(true);
+    try {
+      if (isPsychologist) {
+        await clearPsychologistNotifications();
+      } else if (isPatient) {
+        await clearPatientNotifications();
+      }
+
+      toast.success("Notificacoes limpas com sucesso.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Nao foi possivel limpar as notificacoes.";
+      toast.error(message);
+    } finally {
+      setIsProcessingNotifications(false);
+    }
+  }
+
   async function handleLogout() {
     try {
       const { error } = await supabase.auth.signOut();
@@ -302,8 +348,8 @@ export function Topbar({ userName, userRole, onMenuToggle }: TopbarProps) {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-card px-4 lg:px-6">
-      <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-30 flex h-16 min-w-0 items-center justify-between gap-2 border-b border-border bg-card px-3 sm:px-4 lg:px-6">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
         <button onClick={onMenuToggle} className="rounded-lg p-2 transition-colors hover:bg-muted lg:hidden">
           <Menu className="h-5 w-5 text-muted-foreground" />
         </button>
@@ -364,7 +410,7 @@ export function Topbar({ userName, userRole, onMenuToggle }: TopbarProps) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 lg:gap-4">
+      <div className="flex min-w-0 items-center gap-1.5 sm:gap-2 lg:gap-4">
         <div className="relative">
           <button
             onClick={() => {
@@ -383,8 +429,28 @@ export function Topbar({ userName, userRole, onMenuToggle }: TopbarProps) {
           </button>
 
           {showNotifications ? (
-            <div className="absolute right-0 top-12 z-50 w-80 animate-scale-in rounded-xl border border-border bg-card p-4 shadow-lg">
-              <h3 className="mb-3 font-heading text-sm font-semibold">Notificacoes</h3>
+            <div className="absolute right-0 top-12 z-50 w-[calc(100vw-2rem)] max-w-sm animate-scale-in rounded-xl border border-border bg-card p-4 shadow-lg sm:w-80">
+              <div className="mb-3 space-y-2">
+                <h3 className="font-heading text-sm font-semibold">Notificacoes</h3>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <button
+                    type="button"
+                    onClick={() => void handleMarkAllNotificationsAsRead()}
+                    disabled={isProcessingNotifications || unreadCount === 0}
+                    className="text-xs font-medium text-primary transition-colors hover:text-primary/80 disabled:cursor-not-allowed disabled:text-muted-foreground"
+                  >
+                    Marcar todas como lidas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleClearNotifications()}
+                    disabled={isProcessingNotifications || notifications.length === 0}
+                    className="text-xs font-medium text-destructive transition-colors hover:text-destructive/80 disabled:cursor-not-allowed disabled:text-muted-foreground"
+                  >
+                    Limpar todas
+                  </button>
+                </div>
+              </div>
               <div className="max-h-64 space-y-3 overflow-y-auto">
                 {isLoadingNotifications ? (
                   <div className="rounded-lg bg-muted/50 p-3 text-sm text-muted-foreground">Carregando notificacoes...</div>
@@ -479,7 +545,7 @@ export function Topbar({ userName, userRole, onMenuToggle }: TopbarProps) {
           </button>
 
           {showProfile ? (
-            <div className="absolute right-0 top-12 z-50 w-48 animate-scale-in rounded-xl border border-border bg-card p-2 shadow-lg">
+            <div className="absolute right-0 top-12 z-50 w-[calc(100vw-2rem)] max-w-48 animate-scale-in rounded-xl border border-border bg-card p-2 shadow-lg sm:w-48">
               <button onClick={handleGoToProfile} className="w-full rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-muted">Meu Perfil</button>
               <button onClick={handleGoToSettings} className="w-full rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-muted">{getSecondaryMenuLabel()}</button>
               <hr className="my-1 border-border" />

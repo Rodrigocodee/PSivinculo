@@ -76,7 +76,9 @@ vi.mock("@/lib/supabase", () => ({
 }));
 
 import {
+  clearPatientNotifications,
   listPatientNotifications,
+  markAllPatientNotificationsAsRead,
   markPatientNotificationsAsRead,
 } from "@/services/patientNotifications";
 
@@ -132,5 +134,17 @@ describe("patientNotifications", () => {
     await markPatientNotificationsAsRead([" ", ""]);
 
     expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+
+  it("marks all patient notifications as read through the backend rpc", async () => {
+    await markAllPatientNotificationsAsRead();
+
+    expect(mocks.rpc).toHaveBeenCalledWith("mark_all_my_notifications_as_read");
+  });
+
+  it("clears patient notifications through the backend rpc", async () => {
+    await clearPatientNotifications();
+
+    expect(mocks.rpc).toHaveBeenCalledWith("clear_my_notifications");
   });
 });

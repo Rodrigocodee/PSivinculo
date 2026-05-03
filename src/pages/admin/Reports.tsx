@@ -250,44 +250,46 @@ export default function AdminReports() {
 
         <div className="rounded-xl border border-border bg-card p-5">
           <h2 className="mb-4 font-heading font-semibold text-foreground">Profissionais com mais Atendimentos</h2>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="py-2 text-left font-semibold text-muted-foreground">Profissional</th>
-                <th className="py-2 text-center font-semibold text-muted-foreground">Atendimentos</th>
-                <th className="py-2 text-center font-semibold text-muted-foreground">Faturamento</th>
-                <th className="py-2 text-center font-semibold text-muted-foreground">Ocupacao</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data?.hasProfessionalRankingData ? (
-                data.professionalRanking.map((professional) => (
-                  <tr key={professional.id} className="border-b border-border">
-                    <td className="py-3 font-medium text-foreground">{professional.name}</td>
-                    <td className="py-3 text-center text-muted-foreground">{professional.appointments}</td>
-                    <td className="py-3 text-center text-muted-foreground">{formatCurrency(professional.revenue)}</td>
-                    <td className="py-3 text-center">
-                      <span
-                        className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                          professional.occupancy == null
-                            ? "bg-muted text-muted-foreground"
-                            : "bg-primary/10 text-primary"
-                        }`}
-                      >
-                        {professional.occupancy == null ? "--" : `${professional.occupancy}%`}
-                      </span>
+          <div className="table-scroll">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="py-2 pr-4 text-left font-semibold text-muted-foreground">Profissional</th>
+                  <th className="px-4 py-2 text-center font-semibold text-muted-foreground">Atendimentos</th>
+                  <th className="px-4 py-2 text-center font-semibold text-muted-foreground">Faturamento</th>
+                  <th className="py-2 pl-4 text-center font-semibold text-muted-foreground">Ocupacao</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data?.hasProfessionalRankingData ? (
+                  data.professionalRanking.map((professional) => (
+                    <tr key={professional.id} className="border-b border-border">
+                      <td className="py-3 pr-4 font-medium text-foreground">{professional.name}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{professional.appointments}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{formatCurrency(professional.revenue)}</td>
+                      <td className="py-3 pl-4 text-center">
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                            professional.occupancy == null
+                              ? "bg-muted text-muted-foreground"
+                              : "bg-primary/10 text-primary"
+                          }`}
+                        >
+                          {professional.occupancy == null ? "--" : `${professional.occupancy}%`}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
+                      Ainda nao ha atendimentos reais suficientes para montar o ranking de profissionais.
                     </td>
                   </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
-                    Ainda nao ha atendimentos reais suficientes para montar o ranking de profissionais.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </AppLayout>

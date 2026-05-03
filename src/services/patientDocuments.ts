@@ -3,16 +3,18 @@ import {
   getCurrentPaciente,
   type CurrentPacienteContext,
 } from "@/services/currentPatient";
+import { resolvePsychologistNameById } from "@/services/psychologistLookup";
 
-type PagamentoRow = Record<string, unknown>;
+type ConsultationRow = Record<string, unknown>;
 
 export type PatientDocument = {
   id: string;
-  type: "Recibo" | "Documento";
-  description: string;
+  psychologistName: string;
   date: string | null;
   amount: number | null;
   amountLabel: string;
+  status: string;
+  statusLabel: string;
   downloadUrl: string | null;
   availabilityLabel: string | null;
 };
@@ -61,72 +63,12 @@ function parseValidDate(value: string | null | undefined) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function getPaymentDate(payment: PagamentoRow) {
+function getConsultationPaymentUrl(consulta: ConsultationRow) {
   return (
-    pickString(payment, ["data_pagamento", "data", "created_at", "updated_at", "data_vencimento"]) ||
+    pickString(consulta, ["asaas_invoice_url"]) ||
+    pickString(consulta, ["asaas_bank_slip_url"]) ||
     null
   );
-}
-
-function getDocumentDescription(payment: PagamentoRow, date: string | null) {
-  const explicitDescription =
-    pickString(payment, ["descricao", "description", "titulo", "reference", "nome_consulta"]) ||
-    null;
-
-  if (explicitDescription) return explicitDescription;
-
-  const parsedDate = parseValidDate(date);
-  if (parsedDate) {
-    return `Pagamento de ${parsedDate.toLocaleDateString("pt-BR")}`;
-  }
-
-  return "Pagamento registrado";
-}
-
-function getDocumentType(payment: PagamentoRow): PatientDocument["type"] {
-  const explicitType =
-    pickString(payment, ["tipo_documento", "document_type", "tipo", "categoria", "category"]) ||
-    "";
-  const normalizedType = explicitType.toLowerCase();
-
-  if (
-    ["documento", "declaracao", "declaracao de comparecimento", "atestado", "arquivo"].some(
-      (candidate) => normalizedType.includes(candidate),
-    )
-  ) {
-    return "Documento";
-  }
-
-  return "Recibo";
-}
-
-function getRawDownloadReference(payment: PagamentoRow) {
-  return (
-    pickString(payment, [
-      "download_url",
-      "receipt_url",
-      "recibo_url",
-      "document_url",
-      "arquivo_url",
-      "pdf_url",
-      "comprovante_url",
-      "file_url",
-      "url_recibo",
-      "url_documento",
-      "anexo_url",
-    ]) || null
-  );
-}
-
-function getDownloadUrl(payment: PagamentoRow) {
-  const reference = getRawDownloadReference(payment);
-  if (!reference) return null;
-
-  if (/^(https?:\/\/|\/)/i.test(reference)) {
-    return reference;
-  }
-
-  return null;
 }
 
 function formatCurrency(amount: number | null) {
@@ -138,20 +80,22 @@ function formatCurrency(amount: number | null) {
   }).format(amount);
 }
 
-function mapPaymentToDocument(payment: PagamentoRow): PatientDocument {
-  const date = getPaymentDate(payment);
-  const amount = getPossibleNumber(payment, ["valor", "amount", "valor_pago", "total", "preco"]);
-  const downloadUrl = getDownloadUrl(payment);
+function mapConsultationToDocument(
+  consulta: ConsultationRow,
+  psychologistName: string,
+): PatientDocument {
+  const amount = getPossibleNumber(consulta, ["valor_consulta"]);
 
   return {
-    id: pickString(payment, ["id"]) || crypto.randomUUID(),
-    type: getDocumentType(payment),
-    description: getDocumentDescription(payment, date),
-    date,
+    id: pickString(consulta, ["id"]) || crypto.randomUUID(),
+    psychologistName,
+    date: pickString(consulta, ["data_consulta"]) || null,
     amount,
     amountLabel: formatCurrency(amount),
-    downloadUrl,
-    availabilityLabel: downloadUrl ? null : "Disponivel em breve",
+    status: pickString(consulta, ["status_pagamento"]) || "pago",
+    statusLabel: "Pago",
+    downloadUrl: getConsultationPaymentUrl(consulta),
+    availabilityLabel: getConsultationPaymentUrl(consulta) ? null : "Disponivel em breve",
   };
 }
 
@@ -170,14 +114,44 @@ export async function fetchPatientDocumentsData(): Promise<PatientDocumentsData>
   }
 
   const { data, error } = await supabase
-    .from("pagamentos")
+    .from("consultas")
     .select("*")
-    .eq("paciente_id", patient.patientId);
+    .eq("paciente_id", patient.patientId)
+    .eq("status_pagamento", "pago")
+    .order("data_consulta", { ascending: false });
 
   if (error) throw error;
 
-  const documents = ((data ?? []) as PagamentoRow[])
-    .map(mapPaymentToDocument)
+  const consultationRows = (data ?? []) as ConsultationRow[];
+  const psychologistIds = new Set<string>(
+    [patient.psychologistId]
+      .concat(consultationRows.map((consulta) => pickString(consulta, ["psicologo_id"]) || ""))
+      .filter(Boolean),
+  );
+  const psychologistNameById = new Map<string, string>();
+
+  await Promise.all(
+    Array.from(psychologistIds).map(async (psychologistId) => {
+      const psychologistName = await resolvePsychologistNameById(
+        psychologistId,
+        pickString(
+          (patient.user?.user_metadata || {}) as Record<string, unknown>,
+          ["psychologist_name"],
+        ) || "",
+      );
+
+      psychologistNameById.set(psychologistId, psychologistName);
+    }),
+  );
+
+  const documents = consultationRows
+    .map((consulta) =>
+      mapConsultationToDocument(
+        consulta,
+        psychologistNameById.get(pickString(consulta, ["psicologo_id"]) || "") ||
+          "Psicologo(a)",
+      ),
+    )
     .sort((left, right) => {
       const leftTime = parseValidDate(left.date)?.getTime() ?? 0;
       const rightTime = parseValidDate(right.date)?.getTime() ?? 0;

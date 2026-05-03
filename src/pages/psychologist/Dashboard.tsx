@@ -4,6 +4,7 @@ import { getProfessionalPreviewActionProps } from "@/components/psychologist/Pro
 import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-profile";
 import { getFirstName } from "@/services/currentPsychologist";
 import { buscarDashboardPsicologo } from "@/services/dashboard";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 import {
   AlertCircle,
   ArrowRight,
@@ -315,10 +316,7 @@ export default function PsychologistDashboard() {
                     to={action.path}
                     {...(action.blockedInPreview
                       ? getProfessionalPreviewActionProps({
-                          description:
-                            action.label === "Novo Paciente"
-                              ? "Para cadastrar pacientes de verdade e comecar sua rotina clinica, escolha um plano e libere sua area profissional."
-                              : "Para criar agendamentos reais e usar sua agenda profissional sem bloqueios, escolha um plano e libere o acesso.",
+                          description: PREVIEW_FEATURE_LOCK_MESSAGE,
                         })
                       : {})}
                     className="group rounded-2xl border border-border/70 bg-background/70 p-4 transition-all hover:border-primary/20 hover:bg-muted/50 hover:shadow-sm"

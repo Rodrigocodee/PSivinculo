@@ -191,4 +191,48 @@ describe("PatientAppointments", () => {
     expect(screen.getByRole("button", { name: "Recusar reagendamento" })).toBeInTheDocument();
     expect(screen.getByText("Responder reagendamento")).toBeInTheDocument();
   });
+
+  it("exibe o botao de pagamento quando a consulta tem cobranca pendente", async () => {
+    fetchPatientAppointmentsDataMock.mockResolvedValue({
+      patient: {
+        fullName: "Bala doida",
+      },
+      appointments: [
+        {
+          id: "consulta-3",
+          dateTime: "2026-05-01T10:00:00",
+          requestedDateTimeOriginal: "2026-05-01T10:00:00",
+          respondedAt: null,
+          lastResponseBy: "psicologo",
+          status: "confirmada",
+          sessionType: "online",
+          psychologistName: "Rodrigo Ferreira de Melo",
+          notes: "Consulta confirmada",
+          consultationPrice: 180,
+          consultationDurationMinutes: 50,
+          presentialLocation: null,
+          paymentStatus: "aguardando_pagamento",
+          paymentUrl: "https://sandbox.asaas.com/i/consulta-3",
+          asaasPaymentId: "pay_123",
+          isUpcoming: true,
+        },
+      ],
+      hasLinkedPatientRecord: true,
+      canRequestAppointment: true,
+      consultationSettings: null,
+    });
+
+    renderPage("/paciente/agendamentos");
+
+    expect(await screen.findByText("Detalhes")).toBeInTheDocument();
+    expect(screen.getByText("Pagamento pendente")).toBeInTheDocument();
+    expect(screen.getByText("Valor: R$ 180,00")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Pagar consulta" })).toHaveAttribute(
+      "href",
+      "https://sandbox.asaas.com/i/consulta-3",
+    );
+    screen.getByRole("button", { name: "Detalhes" }).click();
+
+    expect((await screen.findAllByRole("link", { name: "Pagar consulta" })).length).toBeGreaterThan(0);
+  });
 });

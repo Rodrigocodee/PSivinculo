@@ -26,7 +26,7 @@ export const publicFooterColumns: PublicSiteFooterColumn[] = [
     links: [
       { label: "Funcionalidades", href: "/#features" },
       { label: "Planos", href: "/#pricing" },
-      { label: "Demonstração", href: "/#mockup" },
+      { label: "Demonstração", href: "/demo" },
     ],
   },
   {

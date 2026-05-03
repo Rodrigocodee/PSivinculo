@@ -76,6 +76,24 @@ async function buildCheckoutRequestHeaders() {
   return headers;
 }
 
+function buildPaymentReturnCallback() {
+  if (typeof window === "undefined" || !window.location?.origin) return undefined;
+
+  return {
+    successUrl: new URL("/psi/pagamento/retorno", window.location.origin).toString(),
+    autoRedirect: true,
+  };
+}
+
+function buildApiUrl(path: string) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/g, "");
+
+  if (!configuredBaseUrl) return normalizedPath;
+
+  return new URL(normalizedPath, `${configuredBaseUrl}/`).toString();
+}
+
 export async function createAsaasSubscriptionForPlan(input: {
   planKey: PublicPlanCheckoutKey;
   customer: AsaasCheckoutCustomerInput;
@@ -87,7 +105,7 @@ export async function createAsaasSubscriptionForPlan(input: {
   const timeoutId = window.setTimeout(() => controller.abort(), input.timeoutMs ?? 25_000);
 
   try {
-    const response = await fetch("/api/asaas/create-subscription", {
+    const response = await fetch(buildApiUrl("/api/asaas/create-subscription"), {
       method: "POST",
       headers: await buildCheckoutRequestHeaders(),
       body: JSON.stringify({
@@ -96,6 +114,7 @@ export async function createAsaasSubscriptionForPlan(input: {
         email: input.customer.email.trim().toLowerCase(),
         cpfCnpj: input.customer.cpfCnpj.trim(),
         billingType: input.billingType || "UNDEFINED",
+        callback: buildPaymentReturnCallback(),
       }),
       signal: controller.signal,
     });

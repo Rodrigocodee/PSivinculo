@@ -1,7 +1,7 @@
 import { DeferredRecharts } from "@/components/charts/DeferredRecharts";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-profile";
-import { buscarRelatorioPsicologo, type RelatorioMensal } from "@/services/financeiro";
+import { getPsychologistReports } from "@/services/psychologistFinancialData";
 import { Calendar, Users, XCircle, UserMinus, Filter } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -11,57 +11,70 @@ function formatCurrency(value: number) {
 
 export default function PsychologistReports() {
   const { data: profile } = useCurrentPsychologistProfile();
-  const [activePatients, setActivePatients] = useState(0);
-  const [monthlyData, setMonthlyData] = useState<RelatorioMensal[]>([]);
+  const [monthOptions, setMonthOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [selectedMonth, setSelectedMonth] = useState("");
+  const [summary, setSummary] = useState({
+    totalAppointments: 0,
+    completedAppointments: 0,
+    cancelledAppointments: 0,
+    missedAppointments: 0,
+    activePatients: 0,
+  });
   const [charts, setCharts] = useState<{
     appointments: Array<{ month: string; total: number }>;
     revenue: Array<{ month: string; value: number }>;
+    results: Array<{ name: string; value: number; color: string }>;
   }>({
     appointments: [],
     revenue: [],
+    results: [],
   });
   const [isLoading, setIsLoading] = useState(true);
   const psychologistName = profile?.fullName?.trim() || "Profissional";
 
   useEffect(() => {
+    let active = true;
+
     async function carregarRelatorios() {
+      setIsLoading(true);
+
       try {
-        const data = await buscarRelatorioPsicologo();
-        setActivePatients(data.activePatients);
-        setMonthlyData(data.monthly);
+        const data = await getPsychologistReports({
+          monthKey: selectedMonth || null,
+        });
+        if (!active) return;
+
+        setMonthOptions(data.monthOptions);
+        setSelectedMonth(data.selectedMonth);
+        setSummary(data.summary);
         setCharts(data.charts);
-        setSelectedMonth((current) => current || data.monthly[new Date().getMonth()]?.monthKey || data.monthly[0]?.monthKey || "");
       } catch (error) {
         console.error("Erro ao carregar relatorios:", error);
-        setActivePatients(0);
-        setMonthlyData([]);
-        setCharts({ appointments: [], revenue: [] });
+        if (!active) return;
+        setMonthOptions([]);
+        setSummary({
+          totalAppointments: 0,
+          completedAppointments: 0,
+          cancelledAppointments: 0,
+          missedAppointments: 0,
+          activePatients: 0,
+        });
+        setCharts({ appointments: [], revenue: [], results: [] });
       } finally {
-        setIsLoading(false);
+        if (active) setIsLoading(false);
       }
     }
 
-    carregarRelatorios();
-  }, []);
+    void carregarRelatorios();
 
-  const currentMonth = useMemo(() => {
-    return monthlyData.find((month) => month.monthKey === selectedMonth) ?? null;
-  }, [monthlyData, selectedMonth]);
-
-  const pieData = useMemo(() => {
-    const month = currentMonth ?? {
-      completedAppointments: 0,
-      cancelledAppointments: 0,
-      missedAppointments: 0,
+    return () => {
+      active = false;
     };
+  }, [selectedMonth]);
 
-    return [
-      { name: "Realizadas", value: month.completedAppointments, color: "hsl(155, 50%, 45%)" },
-      { name: "Canceladas", value: month.cancelledAppointments, color: "hsl(0, 65%, 55%)" },
-      { name: "Faltas", value: month.missedAppointments, color: "hsl(38, 90%, 55%)" },
-    ];
-  }, [currentMonth]);
+  const selectedPeriodRevenue = useMemo(() => {
+    return charts.revenue[charts.revenue.length - 1]?.value ?? 0;
+  }, [charts.revenue]);
 
   return (
     <AppLayout role="psychologist" userName={psychologistName}>
@@ -79,8 +92,8 @@ export default function PsychologistReports() {
                 onChange={(e) => setSelectedMonth(e.target.value)}
                 className="bg-transparent text-sm outline-none text-muted-foreground"
               >
-                {monthlyData.map((item) => (
-                  <option key={item.monthKey} value={item.monthKey}>{item.label}</option>
+                {monthOptions.map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
                 ))}
               </select>
             </div>
@@ -89,11 +102,11 @@ export default function PsychologistReports() {
 
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           {[
-            { label: "Total de Consultas", value: currentMonth?.totalAppointments ?? 0, icon: Calendar, color: "text-primary" },
-            { label: "Realizadas", value: currentMonth?.completedAppointments ?? 0, icon: Calendar, color: "text-success" },
-            { label: "Cancelamentos", value: currentMonth?.cancelledAppointments ?? 0, icon: XCircle, color: "text-destructive" },
-            { label: "Faltas", value: currentMonth?.missedAppointments ?? 0, icon: UserMinus, color: "text-warning" },
-            { label: "Pacientes Ativos", value: activePatients, icon: Users, color: "text-secondary" },
+            { label: "Total de Consultas", value: summary.totalAppointments, icon: Calendar, color: "text-primary" },
+            { label: "Realizadas", value: summary.completedAppointments, icon: Calendar, color: "text-success" },
+            { label: "Cancelamentos", value: summary.cancelledAppointments, icon: XCircle, color: "text-destructive" },
+            { label: "Faltas", value: summary.missedAppointments, icon: UserMinus, color: "text-warning" },
+            { label: "Pacientes Ativos", value: summary.activePatients, icon: Users, color: "text-secondary" },
           ].map((s, i) => (
             <div key={i} className="stat-card text-center">
               <s.icon className={`w-5 h-5 mx-auto mb-2 ${s.color}`} />
@@ -132,11 +145,11 @@ export default function PsychologistReports() {
             ) : (
               <>
                 <DeferredRecharts fallback={<div className="h-[250px] animate-pulse rounded-xl bg-muted/40" />}>
-                  {({ Cell, Pie, PieChart, ResponsiveContainer, Tooltip }) => (
-                    <ResponsiveContainer width="100%" height={250}>
-                      <PieChart>
-                        <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} dataKey="value" paddingAngle={4}>
-                          {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                {({ Cell, Pie, PieChart, ResponsiveContainer, Tooltip }) => (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <PieChart>
+                      <Pie data={charts.results} cx="50%" cy="50%" innerRadius={60} outerRadius={90} dataKey="value" paddingAngle={4}>
+                          {charts.results.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                         </Pie>
                         <Tooltip contentStyle={{ borderRadius: "12px", border: "1px solid hsl(220, 20%, 90%)" }} />
                       </PieChart>
@@ -144,7 +157,7 @@ export default function PsychologistReports() {
                   )}
                 </DeferredRecharts>
                 <div className="flex justify-center gap-6 mt-2">
-                  {pieData.map((d, i) => (
+                  {charts.results.map((d, i) => (
                     <div key={i} className="flex items-center gap-2 text-sm">
                       <div className="w-3 h-3 rounded-full" style={{ background: d.color }} />
                       <span className="text-muted-foreground">{d.name} ({d.value})</span>
@@ -159,7 +172,7 @@ export default function PsychologistReports() {
         <div className="bg-card rounded-xl border border-border p-5">
           <div className="flex items-center justify-between gap-4 mb-4">
             <h2 className="font-heading font-semibold text-foreground">Faturamento Mensal</h2>
-            <p className="text-sm text-muted-foreground">{formatCurrency(currentMonth?.revenue ?? 0)} no periodo selecionado</p>
+            <p className="text-sm text-muted-foreground">{formatCurrency(selectedPeriodRevenue)} no periodo selecionado</p>
           </div>
           {isLoading ? (
             <div className="h-[250px] flex items-center text-sm text-muted-foreground">Carregando grafico...</div>

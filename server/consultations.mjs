@@ -2,7 +2,10 @@ import {
   sendPatientConsultationConfirmationEmail,
   sendPatientConsultationRescheduleEmail,
 } from "./email.mjs";
+import { createConsultationPayment } from "./consultation-payments.mjs";
 import { HttpError } from "./errors.mjs";
+import { loadPsychologistNotificationPreferences } from "./notification-preferences.mjs";
+import { assertProfessionalAccessForAuthenticatedUser } from "./professional-access.mjs";
 import {
   extractBearerToken,
   getRequestSupabaseClient,
@@ -327,6 +330,15 @@ async function loadConsultationEmailContext(consultationId, env) {
     pickString(patient, ["email"]),
   );
   const psychologistName = await resolvePsychologistName(client, psychologistId);
+  const notificationPreferences = await loadPsychologistNotificationPreferences(
+    client,
+    psychologistId,
+    console,
+    {
+      consultationId: pickString(consultation, ["id"]) || consultationId,
+      flow: "consultation_email",
+    },
+  );
 
   return {
     consultationId: pickString(consultation, ["id"]) || consultationId,
@@ -341,10 +353,18 @@ async function loadConsultationEmailContext(consultationId, env) {
     appointmentModality: pickString(consultation, ["modalidade_consulta"]),
     presentialLocation: pickString(consultation, ["local_presencial"]),
     status: pickString(consultation, ["status"]),
+    notificationPreferences,
   };
 }
 
 function shouldSendConfirmationEmail(previousConsultation, currentConsultation) {
+  const previousStatus = normalizeString(previousConsultation?.status).toLowerCase();
+  const currentStatus = normalizeString(currentConsultation?.status).toLowerCase();
+
+  return currentStatus === "confirmada" && previousStatus !== "confirmada";
+}
+
+function shouldCreateConsultationPayment(previousConsultation, currentConsultation) {
   const previousStatus = normalizeString(previousConsultation?.status).toLowerCase();
   const currentStatus = normalizeString(currentConsultation?.status).toLowerCase();
 
@@ -422,19 +442,37 @@ async function maybeSendConsultationEmailNotification({
   }
 
   const emailContext = await loadConsultationEmailContext(currentConsultationId, env);
+  const event = shouldSendConfirmation ? "confirmation" : "reschedule";
+
+  if (emailContext.notificationPreferences?.patient_confirmation === false) {
+    console.info("[Psivinculo][notifications][notification_skipped_due_to_preferences]", {
+      consultationId: currentConsultationId,
+      patientId: emailContext.patientId || null,
+      psychologistId: emailContext.psychologistId || null,
+      event,
+      preference: "patient_confirmation",
+    });
+
+    return {
+      attempted: true,
+      sent: false,
+      event,
+      skippedReason: "notification_preferences_disabled",
+    };
+  }
 
   if (!emailContext.patientEmail) {
     console.warn("[Psivinculo][consultation-email][skipped_missing_patient_email]", {
       consultationId: currentConsultationId,
       patientId: emailContext.patientId || null,
       psychologistId: emailContext.psychologistId || null,
-      event: shouldSendConfirmation ? "confirmation" : "reschedule",
+      event,
     });
 
     return {
       attempted: true,
       sent: false,
-      event: shouldSendConfirmation ? "confirmation" : "reschedule",
+      event,
       skippedReason: "missing_patient_email",
     };
   }
@@ -469,14 +507,24 @@ async function maybeSendConsultationEmailNotification({
       consultationId: currentConsultationId,
       patientId: emailContext.patientId || null,
       patientEmail: maskEmailForLogs(emailContext.patientEmail),
-      event: shouldSendConfirmation ? "confirmation" : "reschedule",
+      event,
+      emailId: normalizeString(result?.emailId) || null,
+    });
+    console.info("[Psivinculo][notifications][notification_sent]", {
+      consultationId: currentConsultationId,
+      patientId: emailContext.patientId || null,
+      psychologistId: emailContext.psychologistId || null,
+      recipientType: "patient",
+      recipientEmail: maskEmailForLogs(emailContext.patientEmail),
+      event,
+      preference: "patient_confirmation",
       emailId: normalizeString(result?.emailId) || null,
     });
 
     return {
       attempted: true,
       sent: true,
-      event: shouldSendConfirmation ? "confirmation" : "reschedule",
+      event,
       emailId: normalizeString(result?.emailId) || null,
     };
   } catch (error) {
@@ -484,7 +532,7 @@ async function maybeSendConsultationEmailNotification({
       consultationId: currentConsultationId,
       patientId: emailContext.patientId || null,
       patientEmail: maskEmailForLogs(emailContext.patientEmail),
-      event: shouldSendConfirmation ? "confirmation" : "reschedule",
+      event,
       code: error instanceof HttpError ? error.code : "EMAIL_SEND_FAILED",
       message: error instanceof Error ? error.message : "Unknown email error",
     });
@@ -492,8 +540,68 @@ async function maybeSendConsultationEmailNotification({
     return {
       attempted: true,
       sent: false,
-      event: shouldSendConfirmation ? "confirmation" : "reschedule",
+      event,
       skippedReason: "email_send_failed",
+    };
+  }
+}
+
+async function maybeCreateConsultationPaymentAfterConfirmation({
+  previousConsultation,
+  currentConsultation,
+  env,
+  requestHeaders,
+}) {
+  const currentConsultationId = pickString(currentConsultation, ["id"]);
+
+  if (!currentConsultationId) {
+    return null;
+  }
+
+  if (!shouldCreateConsultationPayment(previousConsultation, currentConsultation)) {
+    return null;
+  }
+
+  try {
+    return await createConsultationPayment(
+      {
+        consultaId: currentConsultationId,
+      },
+      {
+        env,
+        requestHeaders,
+      },
+    );
+  } catch (error) {
+    console.error("[Psivinculo][consultation-payment][create_failed_after_confirmation]", {
+      consultationId: currentConsultationId,
+      code: error instanceof HttpError ? error.code : "CONSULTATION_PAYMENT_CREATE_FAILED",
+      message: error instanceof Error ? error.message : "Unknown consultation payment error",
+    });
+
+    return {
+      consultationId: currentConsultationId,
+      paymentMode: "asaas_split",
+      paymentStatus: "erro",
+      created: false,
+      reusedExisting: false,
+      success: false,
+      asaasPaymentId: null,
+      invoiceUrl: null,
+      bankSlipUrl: null,
+      billingType: null,
+      externalReference: currentConsultationId,
+      splitSent: false,
+      walletIdMasked: null,
+      payoutPercentage: 95,
+      message:
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Nao foi possivel gerar a cobranca da consulta no Asaas.",
+      errorCode:
+        error instanceof HttpError && error.code
+          ? error.code
+          : "CONSULTATION_PAYMENT_CREATE_FAILED",
     };
   }
 }
@@ -517,7 +625,11 @@ export async function respondConsultaRequestAndNotify(payload, options = {}) {
     });
   }
 
-  const { userClient } = await resolveAuthenticatedRequestContext(requestHeaders, env);
+  const { authenticatedUser, userClient } = await resolveAuthenticatedRequestContext(requestHeaders, env);
+  await assertProfessionalAccessForAuthenticatedUser(
+    getServerSupabaseClient(env),
+    authenticatedUser,
+  );
   const previousConsultation = await loadConsultaSnapshot(userClient, consultationId);
 
   if (!previousConsultation) {
@@ -553,10 +665,17 @@ export async function respondConsultaRequestAndNotify(payload, options = {}) {
     env,
     requestHeaders,
   });
+  const payment = await maybeCreateConsultationPaymentAfterConfirmation({
+    previousConsultation,
+    currentConsultation: consultation,
+    env,
+    requestHeaders,
+  });
 
   return {
     consultation,
     email,
+    payment,
   };
 }
 
@@ -578,7 +697,11 @@ export async function updateConsultaAndNotify(payload, options = {}) {
     });
   }
 
-  const { userClient } = await resolveAuthenticatedRequestContext(requestHeaders, env);
+  const { authenticatedUser, userClient } = await resolveAuthenticatedRequestContext(requestHeaders, env);
+  await assertProfessionalAccessForAuthenticatedUser(
+    getServerSupabaseClient(env),
+    authenticatedUser,
+  );
   const previousConsultation = await loadConsultaSnapshot(userClient, consultationId);
 
   if (!previousConsultation) {
@@ -611,10 +734,17 @@ export async function updateConsultaAndNotify(payload, options = {}) {
     env,
     requestHeaders,
   });
+  const payment = await maybeCreateConsultationPaymentAfterConfirmation({
+    previousConsultation,
+    currentConsultation: consultation,
+    env,
+    requestHeaders,
+  });
 
   return {
     consultation,
     email,
+    payment,
   };
 }
 
@@ -675,5 +805,6 @@ export async function respondConsultaCounterproposalAndNotify(payload, options =
   return {
     consultation,
     email,
+    payment: null,
   };
 }

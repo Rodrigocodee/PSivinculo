@@ -39,7 +39,9 @@ export function RequireAuth({
   const { permissions } = usePermissions();
   const resolvedRole = appUser?.role || getFallbackRoleFromAuthUser(session?.user);
   const effectiveRole = resolvedRole || null;
-  const isAdminRoute = location.pathname.startsWith("/admin");
+  const isAdminRoute =
+    location.pathname.startsWith("/admin") &&
+    !location.pathname.startsWith("/admin/master");
   const adminAccess = isAdminRoute
     ? resolveClinicAdminAccess({
       user: appUser?.user || session?.user || null,

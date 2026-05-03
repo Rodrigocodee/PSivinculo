@@ -3,9 +3,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, Save } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { toast } from "@/components/ui/sonner";
+import { getProfessionalPreviewActionProps } from "@/components/psychologist/ProfessionalPreview";
 import { useCurrentPsychologistConsultationSettings } from "@/hooks/use-current-psychologist-consultation-settings";
 import { useAuth } from "@/contexts/AuthContext";
 import { DEFAULT_MENSAGEM_LEMBRETE_CONSULTA_TEMPLATE } from "@/services/consultaReminder";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 import {
   currentPsychologistConsultationSettingsQueryKey,
   resolvePsychologistConsultationSettingsSnapshot,
@@ -27,7 +29,7 @@ const INPUT_CLASS =
 const defaultForm: ConsultationForm = {
   consultationPrice: "",
   consultationDurationMinutes: "50",
-  consultationModality: "presencial_e_online",
+  consultationModality: "hibrido",
   presentialLocation: "",
   sessionReminderMessage: "",
 };
@@ -223,7 +225,7 @@ export default function PsychologistConsultationSettings() {
                 >
                   <option value="presencial">Presencial</option>
                   <option value="online">Online</option>
-                  <option value="presencial_e_online">Presencial e online</option>
+                  <option value="hibrido">Presencial e online</option>
                 </select>
               </div>
 
@@ -267,6 +269,10 @@ export default function PsychologistConsultationSettings() {
             type="button"
             onClick={handleSave}
             disabled={isSaving}
+            {...getProfessionalPreviewActionProps({
+              title: "Ative sua assinatura para salvar preferencias de consulta.",
+              description: PREVIEW_FEATURE_LOCK_MESSAGE,
+            })}
             className="inline-flex items-center gap-2 rounded-xl px-6 py-2.5 text-sm font-semibold text-primary-foreground transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70 gradient-primary"
           >
             {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

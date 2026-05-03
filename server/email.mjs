@@ -3,6 +3,7 @@ import { HttpError } from "./errors.mjs";
 
 const DEFAULT_EMAIL_FROM = "Psivinculo <onboarding@resend.dev>";
 const DEFAULT_CONSULTATION_AREA_PATH = "/paciente/agendamentos";
+const DEFAULT_PSYCHOLOGIST_CONSULTATION_AREA_PATH = "/psi/agenda";
 const DEFAULT_CONSULTATION_TIME_ZONE = "America/Sao_Paulo";
 
 let cachedResendClient = null;
@@ -80,6 +81,8 @@ function renderConsultationEmailContent(input) {
     "Se voce nao esperava este e-mail, revise sua configuracao de notificacoes no Psivinculo.";
   const ctaLabel = normalizeString(input.ctaLabel);
   const ctaUrl = normalizeString(input.ctaUrl);
+  const secondaryCtaLabel = normalizeString(input.secondaryCtaLabel);
+  const secondaryCtaUrl = normalizeString(input.secondaryCtaUrl);
   const details = buildDetailRows(input.details);
 
   const detailsHtml = details.length
@@ -111,6 +114,19 @@ function renderConsultationEmailContent(input) {
       `
       : "";
 
+  const secondaryCtaHtml =
+    secondaryCtaLabel && secondaryCtaUrl
+      ? `
+        <div style="margin-top:12px;">
+          <a href="${escapeHtml(
+            secondaryCtaUrl,
+          )}" style="display:inline-block;background:#ffffff;color:#334155;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:600;font-size:14px;border:1px solid #cbd5e1;">
+            ${escapeHtml(secondaryCtaLabel)}
+          </a>
+        </div>
+      `
+      : "";
+
   const html = `
     <div style="margin:0;padding:32px 16px;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
       <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:24px;padding:32px;border:1px solid #e2e8f0;">
@@ -125,6 +141,7 @@ function renderConsultationEmailContent(input) {
         </p>
         ${detailsHtml}
         ${ctaHtml}
+        ${secondaryCtaHtml}
         <p style="margin:24px 0 0;font-size:12px;line-height:1.6;color:#64748b;">
           ${escapeHtml(footerNote)}
         </p>
@@ -143,6 +160,10 @@ function renderConsultationEmailContent(input) {
 
   if (ctaLabel && ctaUrl) {
     textParts.push("", `${ctaLabel}: ${ctaUrl}`);
+  }
+
+  if (secondaryCtaLabel && secondaryCtaUrl) {
+    textParts.push("", `${secondaryCtaLabel}: ${secondaryCtaUrl}`);
   }
 
   textParts.push("", footerNote);
@@ -218,9 +239,11 @@ function resolveConsultationCtaUrl(input, options = {}) {
 
   const baseUrl = normalizeString(options.baseUrl).replace(/\/+$/g, "");
   const consultationId = normalizeString(input.consultationId);
+  const areaPath =
+    normalizeString(options.areaPath) || normalizeString(input.areaPath) || DEFAULT_CONSULTATION_AREA_PATH;
   const appointmentsPath = consultationId
-    ? `${DEFAULT_CONSULTATION_AREA_PATH}?consultaId=${encodeURIComponent(consultationId)}`
-    : DEFAULT_CONSULTATION_AREA_PATH;
+    ? `${areaPath}?consultaId=${encodeURIComponent(consultationId)}`
+    : areaPath;
 
   return baseUrl ? `${baseUrl}${appointmentsPath}` : appointmentsPath;
 }
@@ -261,6 +284,58 @@ function buildConsultationEmailDetails(input, options = {}) {
 
   if (presentialLocation) {
     details.push({ label: "Local", value: presentialLocation });
+  }
+
+  return details;
+}
+
+function formatCurrency(value) {
+  const numericValue = typeof value === "number" ? value : Number(normalizeString(value));
+
+  if (!Number.isFinite(numericValue)) {
+    return "";
+  }
+
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(numericValue);
+}
+
+function buildConsultationPaymentEmailDetails(input) {
+  const details = buildConsultationEmailDetails(input);
+  const amountLabel = formatCurrency(input.amount);
+  const paymentLink = normalizeString(input.paymentLink);
+  const bankSlipUrl = normalizeString(input.bankSlipUrl);
+
+  if (amountLabel) {
+    details.push({ label: "Valor", value: amountLabel });
+  }
+
+  if (paymentLink) {
+    details.push({ label: "Link de pagamento", value: paymentLink });
+  }
+
+  if (bankSlipUrl && bankSlipUrl !== paymentLink) {
+    details.push({ label: "Boleto", value: bankSlipUrl });
+  }
+
+  return details;
+}
+
+function isOnlineConsultation(value) {
+  return normalizeString(value).toLowerCase() === "online";
+}
+
+function buildOneHourReminderDetails(input) {
+  const details = buildConsultationEmailDetails(input);
+  const roomLink = normalizeString(input.roomLink);
+
+  if (isOnlineConsultation(input.appointmentModality)) {
+    details.push({
+      label: "Sala online",
+      value: roomLink || "Confira sua area de agendamentos para acessar a sala da consulta.",
+    });
   }
 
   return details;
@@ -504,6 +579,167 @@ export async function sendPatientConsultationRescheduleEmail(input, options = {}
         (isCounterproposal
           ? "Abra sua area de agendamentos para aceitar ou recusar esse novo horario."
           : "Confira sua area de agendamentos para acompanhar os detalhes atualizados da consulta."),
+    },
+    options,
+  );
+}
+
+export async function sendPatientConsultation12HourReminderEmail(input, options = {}) {
+  const normalizedInput = isRecord(input) ? input : {};
+  const appointmentDateTime = formatConsultationDateTime(normalizedInput.appointmentDateTime);
+  const patientName = normalizeString(normalizedInput.patientName) || "Paciente";
+  const psychologistName = normalizeString(normalizedInput.psychologistName) || "Seu psicologo";
+
+  return sendConsultationEmail(
+    {
+      to: normalizedInput.to,
+      event: "consulta_lembrete_12h_paciente",
+      subject:
+        normalizeString(normalizedInput.subject) ||
+        "Lembrete: sua consulta acontece em cerca de 12 horas",
+      title: "Sua consulta esta chegando",
+      intro:
+        normalizeString(normalizedInput.intro) ||
+        `${patientName}, este e um lembrete de que sua consulta com ${psychologistName} acontece em ${appointmentDateTime.fullLabel}.`,
+      details: buildConsultationEmailDetails(normalizedInput),
+      ctaLabel: "Abrir agendamentos",
+      ctaUrl: resolveConsultationCtaUrl(normalizedInput, options),
+      footerNote:
+        normalizeString(normalizedInput.footerNote) ||
+        "Se precisar revisar os detalhes, acesse sua area de agendamentos no Psivinculo.",
+    },
+    options,
+  );
+}
+
+export async function sendPatientConsultation1HourReminderEmail(input, options = {}) {
+  const normalizedInput = isRecord(input) ? input : {};
+  const appointmentDateTime = formatConsultationDateTime(normalizedInput.appointmentDateTime);
+  const patientName = normalizeString(normalizedInput.patientName) || "Paciente";
+  const psychologistName = normalizeString(normalizedInput.psychologistName) || "Seu psicologo";
+  const roomLink = normalizeString(normalizedInput.roomLink);
+  const hasRoomLink = isOnlineConsultation(normalizedInput.appointmentModality) && roomLink;
+  const appointmentsUrl = resolveConsultationCtaUrl(normalizedInput, options);
+
+  return sendConsultationEmail(
+    {
+      to: normalizedInput.to,
+      event: "consulta_lembrete_1h_paciente",
+      subject:
+        normalizeString(normalizedInput.subject) ||
+        "Lembrete: sua consulta comeca em cerca de 1 hora",
+      title: "Falta 1 hora para sua consulta",
+      intro:
+        normalizeString(normalizedInput.intro) ||
+        `${patientName}, sua consulta com ${psychologistName} comeca em ${appointmentDateTime.fullLabel}.`,
+      details: buildOneHourReminderDetails(normalizedInput),
+      ctaLabel: hasRoomLink ? "Abrir sala da consulta" : "Abrir agendamentos",
+      ctaUrl: hasRoomLink ? roomLink : appointmentsUrl,
+      secondaryCtaLabel: hasRoomLink ? "Abrir agendamentos" : "",
+      secondaryCtaUrl: hasRoomLink ? appointmentsUrl : "",
+      footerNote:
+        normalizeString(normalizedInput.footerNote) ||
+        (hasRoomLink
+          ? "Se precisar revisar os demais detalhes, a consulta tambem continua disponivel na sua area de agendamentos."
+          : "Caso o link da sala ainda nao esteja disponivel, acompanhe sua area de agendamentos no Psivinculo."),
+    },
+    options,
+  );
+}
+
+export async function sendPsychologistConsultation1HourReminderEmail(input, options = {}) {
+  const normalizedInput = isRecord(input) ? input : {};
+  const appointmentDateTime = formatConsultationDateTime(normalizedInput.appointmentDateTime);
+  const patientName = normalizeString(normalizedInput.patientName) || "Paciente";
+  const psychologistName = normalizeString(normalizedInput.psychologistName) || "Psicologo";
+  const roomLink = normalizeString(normalizedInput.roomLink);
+  const hasRoomLink = isOnlineConsultation(normalizedInput.appointmentModality) && roomLink;
+  const appointmentsUrl = resolveConsultationCtaUrl(normalizedInput, {
+    ...options,
+    areaPath: DEFAULT_PSYCHOLOGIST_CONSULTATION_AREA_PATH,
+  });
+
+  return sendConsultationEmail(
+    {
+      to: normalizedInput.to,
+      event: "consulta_lembrete_1h_psicologo",
+      subject:
+        normalizeString(normalizedInput.subject) ||
+        `Lembrete: consulta com ${patientName} em cerca de 1 hora`,
+      title: "Sua proxima consulta comeca em 1 hora",
+      intro:
+        normalizeString(normalizedInput.intro) ||
+        `${psychologistName}, sua consulta com ${patientName} esta marcada para ${appointmentDateTime.fullLabel}.`,
+      details: buildOneHourReminderDetails(normalizedInput),
+      ctaLabel: hasRoomLink ? "Abrir sala da consulta" : "Abrir agenda",
+      ctaUrl: hasRoomLink ? roomLink : appointmentsUrl,
+      secondaryCtaLabel: hasRoomLink ? "Abrir agenda" : "",
+      secondaryCtaUrl: hasRoomLink ? appointmentsUrl : "",
+      footerNote:
+        normalizeString(normalizedInput.footerNote) ||
+        (hasRoomLink
+          ? "Se precisar revisar os demais detalhes, a consulta segue disponivel na sua agenda do Psivinculo."
+          : "Se o link da sala ainda nao estiver definido, acompanhe a consulta pela agenda do Psivinculo."),
+    },
+    options,
+  );
+}
+
+export async function sendPatientConsultationPaymentPendingEmail(input, options = {}) {
+  const normalizedInput = isRecord(input) ? input : {};
+  const appointmentDateTime = formatConsultationDateTime(normalizedInput.appointmentDateTime);
+  const patientName = normalizeString(normalizedInput.patientName) || "Paciente";
+  const psychologistName = normalizeString(normalizedInput.psychologistName) || "Seu psicologo";
+  const paymentLink = normalizeString(normalizedInput.paymentLink);
+  const bankSlipUrl = normalizeString(normalizedInput.bankSlipUrl);
+
+  return sendConsultationEmail(
+    {
+      to: normalizedInput.to,
+      event: "pagamento_pendente_paciente",
+      subject: normalizeString(normalizedInput.subject) || "Pagamento pendente da sua consulta",
+      title: "Pagamento pendente",
+      intro:
+        normalizeString(normalizedInput.intro) ||
+        `${patientName}, a cobranca da sua consulta com ${psychologistName} em ${appointmentDateTime.fullLabel} foi gerada.`,
+      details: buildConsultationPaymentEmailDetails(normalizedInput),
+      ctaLabel: paymentLink ? "Abrir pagamento" : "Abrir agendamentos",
+      ctaUrl: paymentLink || resolveConsultationCtaUrl(normalizedInput, options),
+      secondaryCtaLabel: bankSlipUrl && bankSlipUrl !== paymentLink ? "Abrir boleto" : "",
+      secondaryCtaUrl: bankSlipUrl && bankSlipUrl !== paymentLink ? bankSlipUrl : "",
+      footerNote:
+        normalizeString(normalizedInput.footerNote) ||
+        "Se ja realizou o pagamento, aguarde a confirmacao automatica pelo Asaas.",
+    },
+    options,
+  );
+}
+
+export async function sendPatientConsultationPaymentConfirmedEmail(input, options = {}) {
+  const normalizedInput = isRecord(input) ? input : {};
+  const appointmentDateTime = formatConsultationDateTime(normalizedInput.appointmentDateTime);
+  const patientName = normalizeString(normalizedInput.patientName) || "Paciente";
+  const psychologistName = normalizeString(normalizedInput.psychologistName) || "Seu psicologo";
+
+  return sendConsultationEmail(
+    {
+      to: normalizedInput.to,
+      event: "pagamento_confirmado_paciente",
+      subject: normalizeString(normalizedInput.subject) || "Pagamento confirmado no Psivinculo",
+      title: "Pagamento confirmado",
+      intro:
+        normalizeString(normalizedInput.intro) ||
+        `${patientName}, o pagamento da sua consulta com ${psychologistName} foi confirmado.`,
+      details: buildConsultationPaymentEmailDetails({
+        ...normalizedInput,
+        paymentLink: "",
+        bankSlipUrl: "",
+      }),
+      ctaLabel: "Abrir agendamento",
+      ctaUrl: resolveConsultationCtaUrl(normalizedInput, options),
+      footerNote:
+        normalizeString(normalizedInput.footerNote) ||
+        `Sua consulta segue registrada para ${appointmentDateTime.fullLabel}.`,
     },
     options,
   );

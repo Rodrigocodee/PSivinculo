@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   ArrowRight,
   BarChart3,
@@ -22,7 +22,9 @@ import { HelpCenterCard } from "@/components/support/HelpCenterCard";
 import { usePsychologistProfessionalPreview } from "@/components/psychologist/ProfessionalPreview";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePermissions } from "@/contexts/PermissionsContext";
+import { useCurrentPsychologistPaymentSettings } from "@/hooks/use-current-psychologist-payment-settings";
 import { canAccessModule, type PermissionModuleKey } from "@/services/accessControl";
+import { isPsychologistReceivablesEnabled } from "@/services/psychologistPaymentSettings";
 
 interface AppSidebarProps {
   role: "psychologist" | "admin" | "patient";
@@ -36,6 +38,7 @@ type RoleMenuItem = {
   path: string;
   activePaths?: string[];
   moduleKey?: PermissionModuleKey;
+  requiresReceivablesEnabled?: boolean;
 };
 
 const menuItems: Record<AppSidebarProps["role"], RoleMenuItem[]> = {
@@ -45,6 +48,14 @@ const menuItems: Record<AppSidebarProps["role"], RoleMenuItem[]> = {
     { title: "Pacientes", icon: Users, path: "/psi/pacientes", moduleKey: "patients" },
     { title: "Prontuarios", icon: FileText, path: "/psi/prontuarios", moduleKey: "records" },
     { title: "Financeiro", icon: DollarSign, path: "/psi/financeiro", moduleKey: "financial" },
+    {
+      title: "Recebimentos",
+      icon: Receipt,
+      path: "/psi/recebimentos",
+      activePaths: ["/recebimentos"],
+      moduleKey: "financial",
+      requiresReceivablesEnabled: true,
+    },
     { title: "Relatorios", icon: BarChart3, path: "/psi/relatorios", moduleKey: "reports" },
     { title: "Meu Perfil", icon: UserCircle, path: "/psi/configuracoes", moduleKey: "settings" },
     { title: "Consulta", icon: Settings, path: "/psi/consulta-config", moduleKey: "settings" },
@@ -78,6 +89,7 @@ export function AppSidebar({ role, open, onClose }: AppSidebarProps) {
   const { appUser } = useAuth();
   const { isPreviewMode } = usePsychologistProfessionalPreview();
   const { permissions } = usePermissions();
+  const { data: paymentSettings } = useCurrentPsychologistPaymentSettings(role === "psychologist");
   const baseItems = role === "patient"
     ? menuItems.patient
     : role === "admin" && !appUser?.isClinicAdmin
@@ -87,7 +99,11 @@ export function AppSidebar({ role, open, onClose }: AppSidebarProps) {
     ? baseItems
     : baseItems.filter((item) => {
       if (!item.moduleKey) return true;
-      return canAccessModule(role, item.moduleKey, permissions);
+      if (!canAccessModule(role, item.moduleKey, permissions)) return false;
+      if (role === "psychologist" && item.requiresReceivablesEnabled) {
+        return isPsychologistReceivablesEnabled(paymentSettings);
+      }
+      return true;
     });
 
   return (
@@ -100,7 +116,7 @@ export function AppSidebar({ role, open, onClose }: AppSidebarProps) {
       ) : null}
 
       <aside
-        className={`fixed lg:sticky top-0 left-0 z-50 flex h-screen w-64 flex-col border-r border-sidebar-border bg-sidebar transition-transform duration-300 ${
+        className={`fixed left-0 top-0 z-50 flex h-screen w-[min(18rem,calc(100vw-2rem))] flex-col border-r border-sidebar-border bg-sidebar transition-transform duration-300 lg:sticky lg:w-64 ${
           open ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         }`}
       >
@@ -155,13 +171,14 @@ export function AppSidebar({ role, open, onClose }: AppSidebarProps) {
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 Explore a area profissional e libere o uso completo quando quiser.
               </p>
-              <a
-                href="/#pricing"
+              <Link
+                to="/psi/planos"
+                onClick={onClose}
                 className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
               >
                 Escolher plano
                 <ArrowRight className="h-3.5 w-3.5" />
-              </a>
+              </Link>
             </div>
           ) : (
             <HelpCenterCard variant="sidebar" />

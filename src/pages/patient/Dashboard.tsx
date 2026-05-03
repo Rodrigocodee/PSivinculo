@@ -5,6 +5,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import {
   fetchPatientDashboardData,
   type PatientDashboardAppointment,
+  type PatientDashboardPayment,
 } from "@/services/patientDashboard";
 
 const historyStatusClasses: Record<string, string> = {
@@ -61,6 +62,10 @@ function formatCurrency(value: number) {
   }).format(value);
 }
 
+function getPaymentStatusLabel(_status: string) {
+  return "Aguardando pagamento";
+}
+
 function buildAppointmentMeta(appointment: PatientDashboardAppointment) {
   const details = [appointment.psychologistName];
   if (appointment.sessionType) {
@@ -68,6 +73,10 @@ function buildAppointmentMeta(appointment: PatientDashboardAppointment) {
   }
 
   return details.filter(Boolean).join(" · ");
+}
+
+function buildPendingPaymentDateTime(payment: PatientDashboardPayment) {
+  return `${formatDate(payment.dateTime)} as ${formatTime(payment.dateTime)}`;
 }
 
 function LoadingCard({ muted = false }: { muted?: boolean }) {
@@ -109,7 +118,7 @@ export default function PatientDashboard() {
   const patientName = data?.patient.fullName || "Paciente";
   const firstName = getFirstName(patientName);
   const nextAppointment = data?.nextAppointment ?? null;
-  const pendingPayment = data?.pendingPayment ?? null;
+  const pendingPayments = data?.pendingPayments ?? [];
   const recentHistory = data?.recentHistory ?? [];
 
   return (
@@ -192,19 +201,42 @@ export default function PatientDashboard() {
                 <h2 className="font-heading font-semibold text-foreground">Pagamento Pendente</h2>
               </div>
 
-              {pendingPayment ? (
-                <>
-                  <p className="text-2xl font-bold text-warning">
-                    {pendingPayment.amount > 0 ? formatCurrency(pendingPayment.amount) : "Valor nao informado"}
-                  </p>
-                  <p className="mt-1 text-sm text-muted-foreground">{pendingPayment.reference}</p>
-                  <Link
-                    to="/paciente/recibos"
-                    className="mt-4 inline-flex rounded-xl border border-border px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
-                  >
-                    Ver detalhes
-                  </Link>
-                </>
+              {pendingPayments.length > 0 ? (
+                <div className="space-y-3">
+                  {pendingPayments.map((payment) => (
+                    <div key={payment.id} className="rounded-xl border border-warning/20 bg-warning/5 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">
+                            {payment.psychologistName}
+                          </p>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {buildPendingPaymentDateTime(payment)}
+                          </p>
+                          <p className="mt-2 text-base font-semibold text-warning">
+                            {typeof payment.amount === "number"
+                              ? formatCurrency(payment.amount)
+                              : "Valor nao informado"}
+                          </p>
+                        </div>
+                        <span className="rounded-full bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning">
+                          {getPaymentStatusLabel(payment.status)}
+                        </span>
+                      </div>
+
+                      {payment.paymentUrl ? (
+                        <a
+                          href={payment.paymentUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-4 inline-flex rounded-xl px-4 py-2 text-sm font-semibold text-primary-foreground gradient-primary"
+                        >
+                          Pagar consulta
+                        </a>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <>
                   <p className="text-lg font-semibold text-foreground">Nenhum pagamento pendente</p>

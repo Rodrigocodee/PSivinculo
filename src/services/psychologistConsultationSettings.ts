@@ -1,20 +1,22 @@
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { normalizeOnlineSessionLinkInput } from "@/services/onlineSessionLinks";
 import {
   CURRENT_PSYCHOLOGIST_NAME,
   findCurrentPsychologistRecord,
   getCurrentPsychologistContext,
 } from "@/services/currentPsychologist";
+import { assertCurrentPsychologistProfessionalAccess } from "@/services/professionalAccessGuard";
 
 const DEFAULT_CONSULTATION_DURATION_MINUTES = 50;
 const USUARIOS_SETTINGS_SELECT =
-  "id, auth_id, clinica_id, valor_consulta, duracao_consulta_min, modalidade_consulta, local_presencial, mensagem_lembrete_sessao";
+  "id, auth_id, clinica_id, valor_consulta, duracao_consulta_min, modalidade_consulta, local_presencial, link_sessao_online, mensagem_lembrete_sessao";
 
 export const currentPsychologistConsultationSettingsQueryKey = [
   "current-psychologist-consultation-settings",
 ] as const;
 
-export type ConsultationModality = "presencial" | "online" | "presencial_e_online";
+export type ConsultationModality = "presencial" | "online" | "hibrido";
 export type AppointmentModality = "presencial" | "online";
 
 export type PsychologistConsultationSettings = {
@@ -121,13 +123,33 @@ function pickNumber(source: Record<string, unknown> | null | undefined, keys: st
     }
 
     if (typeof value === "string" && value.trim()) {
-      const normalized = value.replace(/\./g, "").replace(",", ".");
-      const parsed = Number(normalized);
-      if (!Number.isNaN(parsed)) return parsed;
+      const parsed = parseLocaleNumber(value);
+      if (parsed !== null) return parsed;
     }
   }
 
   return null;
+}
+
+function normalizeString(value: string | null | undefined) {
+  return value?.trim() || "";
+}
+
+function parseLocaleNumber(value: string) {
+  const normalizedValue = value.trim();
+  if (!normalizedValue) return null;
+
+  let parsed = Number(normalizedValue);
+
+  if (!Number.isFinite(parsed) && /^\d{1,3}(\.\d{3})*,\d+$/.test(normalizedValue)) {
+    parsed = Number(normalizedValue.replace(/\./g, "").replace(",", "."));
+  }
+
+  if (!Number.isFinite(parsed) && /^\d+,\d+$/.test(normalizedValue)) {
+    parsed = Number(normalizedValue.replace(",", "."));
+  }
+
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function normalizeEmail(value: string | null | undefined) {
@@ -218,8 +240,20 @@ function normalizeConsultationModality(value: string | null | undefined): Consul
     return "online";
   }
 
-  if (["presencial_e_online", "ambos", "both", "hybrid", "hibrido", "hibrido_presencial_online"].includes(normalized)) {
-    return "presencial_e_online";
+  if (
+    [
+      "hibrido",
+      "presencial_e_online",
+      "presencial e online",
+      "ambos",
+      "both",
+      "hybrid",
+      "hibrido_presencial_online",
+      "online_e_presencial",
+      "online e presencial",
+    ].includes(normalized)
+  ) {
+    return "hibrido";
   }
 
   return null;
@@ -243,7 +277,7 @@ function buildSettingsFromRow(
   psychologistId?: string | null,
 ): CurrentPsychologistConsultationSettings {
   const consultationModality =
-    normalizeConsultationModality(pickString(row, ["modalidade_consulta"])) || "presencial_e_online";
+    normalizeConsultationModality(pickString(row, ["modalidade_consulta"])) || "hibrido";
   const consultationDurationMinutes =
     pickNumber(row, ["duracao_consulta_min"]) ?? DEFAULT_CONSULTATION_DURATION_MINUTES;
   const consultationPrice = pickNumber(row, ["valor_consulta"]);
@@ -255,7 +289,7 @@ function buildSettingsFromRow(
     attendsPresential: consultationModality !== "online",
     attendsOnline: consultationModality !== "presencial",
     presentialLocation: pickString(row, ["local_presencial"]),
-    onlineSessionLink: "",
+    onlineSessionLink: pickString(row, ["link_sessao_online", "info_online"]),
     sessionReminderMessage: pickString(row, ["mensagem_lembrete_sessao"]),
     psychologistId: resolvePsychologistId(row, psychologistId),
     sourceTable: row ? "usuarios" : null,
@@ -459,9 +493,8 @@ function normalizePriceInput(value: number | string | null) {
   const trimmedValue = value.trim();
   if (!trimmedValue) return null;
 
-  const normalized = trimmedValue.replace(/\./g, "").replace(",", ".");
-  const parsed = Number(normalized);
-  if (Number.isNaN(parsed)) return null;
+  const parsed = parseLocaleNumber(trimmedValue);
+  if (parsed === null) return null;
 
   return Number(parsed.toFixed(2));
 }
@@ -491,7 +524,7 @@ export function getConsultationModalityLabel(
 
   if (normalized === "presencial") return "Presencial";
   if (normalized === "online") return "Online";
-  if (normalized === "presencial_e_online") return "Presencial e online";
+  if (normalized === "hibrido") return "Presencial e online";
 
   return "A definir";
 }
@@ -549,6 +582,8 @@ export async function saveCurrentPsychologistConsultationSettings(
     throw new Error("Nao foi possivel localizar nem criar seu registro na tabela public.usuarios para salvar.");
   }
 
+  await assertCurrentPsychologistProfessionalAccess();
+
   const consultationPrice = normalizePriceInput(input.consultationPrice);
   const consultationDurationMinutes = normalizeDurationInput(input.consultationDurationMinutes);
   const consultationModality = normalizeConsultationModality(input.consultationModality);
@@ -596,6 +631,61 @@ export async function saveCurrentPsychologistConsultationSettings(
     throw new Error(
       toSupabaseMessage(error, "Nao foi possivel salvar as preferencias em public.usuarios."),
     );
+  }
+
+  if (!data || !isRecord(data)) {
+    throw new Error("O update foi executado, mas o Supabase nao retornou o registro atualizado.");
+  }
+
+  return buildSettingsFromRow(data, user.id);
+}
+
+export async function saveCurrentPsychologistOnlineSessionLink(
+  onlineSessionLink: string | null | undefined,
+) {
+  const user = await getAuthenticatedUser();
+
+  if (!user) {
+    throw new Error("Nao foi possivel salvar sem uma sessao autenticada.");
+  }
+
+  const resolution = await resolvePsychologistResolution(user);
+  const usuariosRecord = await ensureUsuariosRecordForCurrentPsychologist(resolution);
+
+  if (!usuariosRecord) {
+    logConsultationSettingsError("usuarios_record_not_found_on_online_link_save", {
+      authUserId: user.id,
+      authEmail: normalizeEmail(user.email),
+      psychologistId: resolution.context?.psychologistId || "",
+      clinicId: resolution.context?.clinicId || "",
+    });
+    throw new Error("Nao foi possivel localizar seu registro em public.usuarios para salvar a sala online.");
+  }
+
+  await assertCurrentPsychologistProfessionalAccess();
+
+  const normalizedOnlineSessionLink = normalizeOnlineSessionLinkInput(onlineSessionLink);
+  const payload = {
+    link_sessao_online: normalizedOnlineSessionLink,
+  };
+
+  const { data, error } = await supabase
+    .from("usuarios")
+    .update(payload)
+    .eq(usuariosRecord.matchColumn, usuariosRecord.matchValue)
+    .select(USUARIOS_SETTINGS_SELECT)
+    .maybeSingle();
+
+  if (error) {
+    logConsultationSettingsError("usuarios_online_link_update_failed", {
+      authUserId: user.id,
+      matchColumn: usuariosRecord.matchColumn,
+      matchValue: usuariosRecord.matchValue,
+      payload,
+      message: toSupabaseMessage(error, "Nao foi possivel salvar a sala online em public.usuarios."),
+      rawError: error,
+    });
+    throw new Error(toSupabaseMessage(error, "Nao foi possivel salvar a sala online em public.usuarios."));
   }
 
   if (!data || !isRecord(data)) {

@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -35,7 +36,7 @@ type ProfessionalPreviewContextValue = {
   requestUnlock: (prompt?: Partial<PreviewUnlockPrompt>) => boolean;
 };
 
-const PROFESSIONAL_PREVIEW_CTA_HREF = "/#pricing";
+const PROFESSIONAL_PREVIEW_CTA_HREF = "/psi/planos";
 const PREVIEW_ACTION_ATTRIBUTE = "data-preview-action";
 const PREVIEW_TITLE_ATTRIBUTE = "data-preview-title";
 const PREVIEW_DESCRIPTION_ATTRIBUTE = "data-preview-description";
@@ -218,10 +219,10 @@ export function PsychologistProfessionalPreviewProvider({
                 Continuar explorando
               </Button>
               <Button asChild className="gradient-primary text-primary-foreground hover:opacity-90">
-                <a href={PROFESSIONAL_PREVIEW_CTA_HREF}>
+                <Link to={PROFESSIONAL_PREVIEW_CTA_HREF}>
                   Escolher plano
                   <ArrowRight className="h-4 w-4" />
-                </a>
+                </Link>
               </Button>
             </div>
           </DialogFooter>
@@ -232,7 +233,7 @@ export function PsychologistProfessionalPreviewProvider({
 }
 
 export function ProfessionalPreviewBanner() {
-  const { isPreviewMode, requestUnlock } = usePsychologistProfessionalPreview();
+  const { isPreviewMode } = usePsychologistProfessionalPreview();
 
   if (!isPreviewMode) return null;
 
@@ -255,23 +256,20 @@ export function ProfessionalPreviewBanner() {
 
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button
+            asChild
             variant="outline"
             className="border-primary/20 bg-white/80"
-            onClick={() =>
-              requestUnlock({
-                description:
-                  "Para cadastrar pacientes, criar agendamentos, salvar prontuarios e emitir recibos, escolha um plano e libere sua area profissional.",
-              })
-            }
           >
-            <LockKeyhole className="h-4 w-4" />
-            Liberar acesso
+            <Link to={PROFESSIONAL_PREVIEW_CTA_HREF}>
+              <LockKeyhole className="h-4 w-4" />
+              Liberar acesso
+            </Link>
           </Button>
           <Button asChild className="gradient-primary text-primary-foreground hover:opacity-90">
-            <a href={PROFESSIONAL_PREVIEW_CTA_HREF}>
+            <Link to={PROFESSIONAL_PREVIEW_CTA_HREF}>
               Escolher plano
               <ArrowRight className="h-4 w-4" />
-            </a>
+            </Link>
           </Button>
         </div>
       </div>

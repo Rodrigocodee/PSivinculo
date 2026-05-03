@@ -1,8 +1,9 @@
 # 🧠 Psivínculo
 
-Sistema SaaS para psicólogos, focado em **organização, gestão de pacientes e automação de consultas**, tudo em um só lugar.
 
----
+
+
+
 
 ## 🚀 Tecnologias utilizadas
 

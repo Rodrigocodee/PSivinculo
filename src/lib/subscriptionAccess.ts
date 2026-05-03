@@ -110,7 +110,7 @@ export function resolveSubscriptionAccessFromSource(source: SubscriptionSource) 
     pickString(source, ["proximo_vencimento", "payment_due_date", "billing_due_date"]),
   );
 
-  if (activeFlag === true || subscriptionStatus === "ACTIVE") {
+  if (activeFlag === true) {
     return true;
   }
 
@@ -120,7 +120,7 @@ export function resolveSubscriptionAccessFromSource(source: SubscriptionSource) 
 
   if (
     activeFlag === false ||
-    ["PENDING", "OVERDUE", "CANCELLED", "INACTIVE", "EXPIRED", "DELETED"].includes(subscriptionStatus)
+    ["ACTIVE", "PENDING", "OVERDUE", "CANCELLED", "INACTIVE", "EXPIRED", "DELETED"].includes(subscriptionStatus)
   ) {
     return false;
   }

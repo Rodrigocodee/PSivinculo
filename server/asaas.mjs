@@ -100,8 +100,9 @@ function isTerminalSubscriptionStatus(value) {
 function getSubscriptionStatusRank(record) {
   const status = normalizeStatusToken(record?.status_assinatura);
 
-  if (record?.assinatura_ativa === true || status === "ACTIVE") return 3;
+  if (record?.assinatura_ativa === true) return 3;
   if (["PENDING", "OVERDUE"].includes(status)) return 2;
+  if (status === "ACTIVE") return 2;
   if (status) return 1;
   return 0;
 }
@@ -554,7 +555,7 @@ function buildEffectiveFinancialSnapshot(source, ownerType) {
     subscriptionId: pickSourceString(source, ["asaas_subscription_id"]) || null,
     customerId: pickSourceString(source, ["asaas_customer_id"]) || null,
     status: status || null,
-    active: activeFlag === true || status === "ACTIVE",
+    active: activeFlag === true,
     monthlyPrice: parseMoney(pickSourceString(source, ["valor_mensal", "valor_plano", "plan_price"])) ?? null,
     dueDate:
       parseStoredDate(
@@ -750,6 +751,163 @@ async function deleteAsaasPayment(config, paymentId) {
   });
 }
 
+function normalizeOwnerType(value) {
+  const normalizedValue = normalizeString(value).toLowerCase();
+  return ["user", "clinic"].includes(normalizedValue) ? normalizedValue : null;
+}
+
+function recordMatchesSubscriptionId(record, subscriptionId) {
+  return Boolean(
+    normalizeString(subscriptionId) &&
+      normalizeString(record?.asaas_subscription_id) === normalizeString(subscriptionId),
+  );
+}
+
+function isActiveSubscriptionRecord(record) {
+  return record?.assinatura_ativa === true;
+}
+
+function summarizeSubscriptionConflictRecord(record) {
+  return {
+    subscriptionId: normalizeString(record?.asaas_subscription_id) || null,
+    planSlug: normalizePlanSlug(record?.plano_slug) || null,
+    status: normalizeStatusToken(record?.status_assinatura) || null,
+    monthlyPrice: parseMoney(record?.valor_plano),
+    nextDueDate: parseStoredDate(record?.proximo_vencimento) || null,
+    paymentMethod:
+      pickSourceString(record, ["forma_pagamento", "payment_method", "billing_method"]) || null,
+    createdAt: normalizeString(record?.created_at) || null,
+    updatedAt: normalizeString(record?.updated_at) || null,
+  };
+}
+
+function selectBillingContextForPayload(actorContext, payload = {}) {
+  const requestedOwnerType = normalizeOwnerType(payload.ownerType || payload.owner_type);
+  const requestedSubscriptionId = normalizeString(payload.asaasSubscriptionId);
+
+  if (requestedOwnerType !== "user") {
+    return {
+      ownerType: requestedOwnerType || normalizeString(actorContext.currentSubscription?.owner_type) || null,
+      currentRecord: actorContext.currentSubscription,
+      currentFinancialSnapshot: actorContext.currentFinancialSnapshot,
+    };
+  }
+
+  const authUserId = normalizeString(actorContext.authenticatedUser?.id);
+  const userRecords = actorContext.subscriptionRecords.filter(
+    (record) =>
+      normalizeString(record?.owner_type) === "user" &&
+      normalizeString(record?.auth_user_id) === authUserId,
+  );
+  const activeUserRecords = userRecords.filter(isActiveSubscriptionRecord);
+  const hasActiveConflict = activeUserRecords.length > 1 && !requestedSubscriptionId;
+  const currentRecord = requestedSubscriptionId
+    ? userRecords.find((record) => recordMatchesSubscriptionId(record, requestedSubscriptionId)) || null
+    : hasActiveConflict
+      ? null
+      : userRecords[0] || null;
+  const currentFinancialSnapshot = buildEffectiveFinancialSnapshot(actorContext.adminRow, "user");
+  const snapshotSubscriptionId = normalizeString(currentFinancialSnapshot?.subscriptionId);
+
+  if (
+    requestedSubscriptionId &&
+    !currentRecord &&
+    requestedSubscriptionId !== snapshotSubscriptionId
+  ) {
+    throw new HttpError(403, "Esta assinatura nao pertence ao psicologo autenticado.", {
+      code: "SUBSCRIPTION_OWNER_MISMATCH",
+      details: {
+        ownerType: "user",
+      },
+    });
+  }
+
+  return {
+    ownerType: "user",
+    currentRecord,
+    currentFinancialSnapshot,
+    conflict: hasActiveConflict
+      ? {
+          code: "MULTIPLE_ACTIVE_USER_SUBSCRIPTIONS",
+          message: "Mais de uma assinatura ativa foi encontrada para este psicologo.",
+          activeCount: activeUserRecords.length,
+          subscriptions: activeUserRecords.map(summarizeSubscriptionConflictRecord),
+        }
+      : null,
+  };
+}
+
+function buildCurrentPlanPayload(scopedContext) {
+  if (scopedContext.conflict) {
+    return {
+      ownerType: scopedContext.ownerType || null,
+      hasSubscription: true,
+      currentPlan: null,
+      canCancel: false,
+      conflict: scopedContext.conflict,
+    };
+  }
+
+  const currentRecord = scopedContext.currentRecord;
+  const snapshot = scopedContext.currentFinancialSnapshot;
+  const planSlug = normalizePlanSlug(currentRecord?.plano_slug || snapshot?.planSlug);
+  const planDefinition = resolveSubscriptionPlan(planSlug);
+  const status = normalizeStatusToken(currentRecord?.status_assinatura || snapshot?.status);
+  const subscriptionId =
+    normalizeString(currentRecord?.asaas_subscription_id) ||
+    normalizeString(snapshot?.subscriptionId) ||
+    null;
+  const dueDate =
+    parseStoredDate(currentRecord?.proximo_vencimento) ||
+    parseStoredDate(snapshot?.dueDate) ||
+    null;
+  const monthlyPrice =
+    parseMoney(currentRecord?.valor_plano) ??
+    snapshot?.monthlyPrice ??
+    planDefinition?.value ??
+    null;
+  const paymentMethod =
+    pickSourceString(currentRecord, ["forma_pagamento", "payment_method", "billing_method"]) ||
+    snapshot?.paymentMethod ||
+    null;
+  const metadata = isRecord(currentRecord?.metadata) ? currentRecord.metadata : null;
+  const asaasPayload = isRecord(currentRecord?.asaas_payload) ? currentRecord.asaas_payload : null;
+  const paymentUrl =
+    pickSourceString(metadata, ["paymentUrl", "payment_url"]) ||
+    extractPaymentUrl(asaasPayload?.firstPayment) ||
+    extractPaymentUrl(asaasPayload?.payment) ||
+    null;
+  const isTerminal = isTerminalSubscriptionStatus(status);
+
+  return {
+    ownerType: scopedContext.ownerType || null,
+    hasSubscription: Boolean(planSlug || status || subscriptionId),
+    currentPlan: {
+      slug: planSlug || null,
+      name:
+        planDefinition?.name ||
+        pickSourceString(currentRecord, ["plano_nome", "plan_name", "subscription_plan_name"]) ||
+        planSlug ||
+        null,
+      status: status || null,
+      monthlyPrice,
+      nextDueDate: dueDate,
+      startedAt: parseStoredDate(currentRecord?.created_at) || null,
+      paymentMethod,
+      subscriptionActive: currentRecord?.assinatura_ativa === true || snapshot?.active === true,
+      subscriptionId,
+      customerId:
+        normalizeString(currentRecord?.asaas_customer_id) ||
+        normalizeString(snapshot?.customerId) ||
+        null,
+      paymentUrl,
+      source: currentRecord ? "assinaturas_asaas" : snapshot ? "usuarios" : null,
+    },
+    canCancel: Boolean(subscriptionId && !isTerminal),
+    conflict: null,
+  };
+}
+
 async function markSubscriptionAsReplaced(record, replacement, env = process.env) {
   const subscriptionId = normalizeString(record?.asaas_subscription_id);
   if (!subscriptionId) return null;
@@ -900,7 +1058,7 @@ function normalizePlanToken(value) {
     .replace(/^-+|-+$/g, "");
 }
 
-function maskEmailForLogs(value) {
+export function maskEmailForLogs(value) {
   const normalizedValue = normalizeEmail(value);
   if (!normalizedValue) return null;
 
@@ -912,7 +1070,7 @@ function maskEmailForLogs(value) {
   return `${visibleStart}***${visibleEnd}@${domain}`;
 }
 
-function maskDocumentForLogs(value) {
+export function maskDocumentForLogs(value) {
   const digits = normalizeDigits(value);
   if (!digits) return null;
 
@@ -930,7 +1088,7 @@ function maskApiKeyForLogs(value) {
   return `${normalizedValue.slice(0, 10)}***${normalizedValue.slice(-4)}`;
 }
 
-function logAsaasEvent(step, context) {
+export function logAsaasEvent(step, context) {
   console.info(`[Psivinculo][asaas][${step}]`, context);
 }
 
@@ -1045,12 +1203,78 @@ function sanitizeBaseUrl(value) {
   const normalizedValue = normalizeString(value);
 
   if (!normalizedValue) {
-    throw new HttpError(500, "ASAAS_BASE_URL nao foi configurada no servidor.", {
+    throw new HttpError(500, "ASAAS_BASE_URL ou ASAAS_API_URL nao foi configurada no servidor.", {
       code: "ASAAS_CONFIG_ERROR",
     });
   }
 
   return normalizedValue.replace(/\/+$/, "");
+}
+
+function isProductionEnv(env = process.env) {
+  return ["NODE_ENV", "VERCEL_ENV", "RAILWAY_ENVIRONMENT", "RENDER_ENV"].some(
+    (key) => normalizeString(env[key]).toLowerCase() === "production",
+  );
+}
+
+function getFrontendPublicBaseUrl(env = process.env) {
+  return normalizeString(
+    env.APP_BASE_URL || env.FRONTEND_PUBLIC_URL || env.PUBLIC_APP_URL || env.SITE_URL,
+  ).replace(/\/+$/g, "");
+}
+
+function parseUrlOrNull(value) {
+  const normalizedValue = normalizeString(value);
+  if (!normalizedValue) return null;
+
+  try {
+    return new URL(normalizedValue);
+  } catch {
+    return null;
+  }
+}
+
+function isLocalhostUrl(value) {
+  const url = parseUrlOrNull(value);
+  if (!url) return false;
+
+  return ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(url.hostname);
+}
+
+function buildFrontendPaymentReturnCallback(env, fallbackCallback) {
+  const configuredBaseUrl = getFrontendPublicBaseUrl(env);
+  const production = isProductionEnv(env);
+
+  if (configuredBaseUrl) {
+    if (production && isLocalhostUrl(configuredBaseUrl)) {
+      throw new HttpError(500, "APP_BASE_URL/FRONTEND_PUBLIC_URL nao pode usar localhost em producao.", {
+        code: "FRONTEND_PUBLIC_URL_INVALID",
+      });
+    }
+
+    const configuredUrl = parseUrlOrNull(configuredBaseUrl);
+    if (!configuredUrl || !["http:", "https:"].includes(configuredUrl.protocol)) {
+      throw new HttpError(500, "APP_BASE_URL/FRONTEND_PUBLIC_URL deve ser uma URL http(s) valida.", {
+        code: "FRONTEND_PUBLIC_URL_INVALID",
+      });
+    }
+
+    return {
+      successUrl: new URL("/psi/pagamento/retorno", configuredUrl).toString(),
+      autoRedirect: true,
+    };
+  }
+
+  if (!isRecord(fallbackCallback)) return undefined;
+
+  const successUrl = normalizeString(fallbackCallback.successUrl);
+  if (production && isLocalhostUrl(successUrl)) {
+    throw new HttpError(500, "Callback do Asaas nao pode usar localhost em producao.", {
+      code: "ASAAS_CALLBACK_URL_INVALID",
+    });
+  }
+
+  return fallbackCallback;
 }
 
 function normalizeBillingType(value) {
@@ -1068,9 +1292,9 @@ function normalizeBillingType(value) {
   return normalizedValue;
 }
 
-function getAsaasConfig(env = process.env) {
+export function getAsaasConfig(env = process.env) {
   const apiKey = normalizeString(env.ASAAS_API_KEY);
-  const baseUrl = sanitizeBaseUrl(env.ASAAS_BASE_URL);
+  const baseUrl = sanitizeBaseUrl(env.ASAAS_BASE_URL || env.ASAAS_API_URL);
 
   if (!apiKey) {
     throw new HttpError(500, "ASAAS_API_KEY nao foi configurada no servidor.", {
@@ -1197,7 +1421,7 @@ function buildCustomerInput(payload) {
   });
 }
 
-function buildPlanInput(payload) {
+function buildPlanInput(payload, env = process.env) {
   const plan = isRecord(payload.plan)
     ? payload.plan
     : typeof payload.plan === "string"
@@ -1268,9 +1492,7 @@ function buildPlanInput(payload) {
     value,
     billingType: normalizeBillingType(pickFirstValue(plan.billingType, payload.billingType)),
     description: resolvedPlan.description,
-    callback: isRecord(pickFirstValue(plan.callback, payload.callback))
-      ? pickFirstValue(plan.callback, payload.callback)
-      : undefined,
+    callback: buildFrontendPaymentReturnCallback(env, pickFirstValue(plan.callback, payload.callback)),
     endDate,
     maxPayments,
     discount: isRecord(pickFirstValue(plan.discount, payload.discount))
@@ -1300,9 +1522,9 @@ function buildSubscriptionExternalReference(planInput, customerInput) {
   return `psivinculo-${planToken || "plano"}-${customerToken || "cliente"}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function buildSubscriptionInput(payload) {
+function buildSubscriptionInput(payload, env = process.env) {
   const customer = buildCustomerInput(payload);
-  const plan = buildPlanInput(payload);
+  const plan = buildPlanInput(payload, env);
   const nextDueDate = calculateNextDueDate({
     nextDueDate: pickFirstValue(payload.nextDueDate, payload.dueDate),
     billingDay: payload.billingDay,
@@ -1377,7 +1599,7 @@ function buildAsaasError(status, payload) {
   });
 }
 
-async function asaasRequest(config, endpoint, options = {}) {
+export async function asaasRequest(config, endpoint, options = {}) {
   const controller = new AbortController();
   const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const normalizedEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
@@ -1541,7 +1763,7 @@ async function createCustomer(config, customerInput) {
   });
 }
 
-async function findOrCreateCustomer(config, customerInput) {
+export async function findOrCreateCustomer(config, customerInput) {
   const existingCustomer = await findCustomer(config, customerInput);
 
   if (existingCustomer) {
@@ -1713,6 +1935,10 @@ function extractWebhookSubscriptionSummary(payload, subscriptionDetails) {
   };
 }
 
+function isSubscriptionPlanResolutionError(error) {
+  return isRecord(error) && normalizeString(error.code) === "SUBSCRIPTION_PLAN_RESOLUTION_ERROR";
+}
+
 export async function createSubscriptionOnAsaas(payload, options = {}) {
   if (!isRecord(payload)) {
     throw new HttpError(400, "O corpo da requisicao deve ser um objeto JSON valido.", {
@@ -1723,7 +1949,7 @@ export async function createSubscriptionOnAsaas(payload, options = {}) {
   const { env, requestHeaders } = resolveCreateSubscriptionOptions(options);
   const config = getAsaasConfig(env);
   getSupabaseServerConfig(env);
-  const subscriptionInput = buildSubscriptionInput(payload);
+  const subscriptionInput = buildSubscriptionInput(payload, env);
   const client = getServerSupabaseClient(env);
   const ownerContext = await resolveBillingOwnerContext(
     {
@@ -2181,6 +2407,20 @@ export async function createSubscriptionPaymentLink(payload = {}, options = {}) 
   };
 }
 
+export async function getCurrentSubscriptionPlanOnAsaas(payload = {}, options = {}) {
+  if (!isRecord(payload)) {
+    throw new HttpError(400, "O corpo da requisicao deve ser um objeto JSON valido.", {
+      code: "INVALID_REQUEST_BODY",
+    });
+  }
+
+  const { env, requestHeaders } = resolveCreateSubscriptionOptions(options);
+  const actorContext = await resolveActorBillingContext({ env, requestHeaders });
+  const scopedContext = selectBillingContextForPayload(actorContext, payload);
+
+  return buildCurrentPlanPayload(scopedContext);
+}
+
 export async function cancelSubscriptionPlanOnAsaas(payload = {}, options = {}) {
   if (!isRecord(payload)) {
     throw new HttpError(400, "O corpo da requisicao deve ser um objeto JSON valido.", {
@@ -2191,11 +2431,23 @@ export async function cancelSubscriptionPlanOnAsaas(payload = {}, options = {}) 
   const { env, requestHeaders } = resolveCreateSubscriptionOptions(options);
   const config = getAsaasConfig(env);
   const actorContext = await resolveActorBillingContext({ env, requestHeaders });
-  const currentRecord = actorContext.currentSubscription;
+  const scopedContext = selectBillingContextForPayload(actorContext, payload);
+  if (scopedContext.conflict) {
+    throw new HttpError(
+      409,
+      "Mais de uma assinatura ativa foi encontrada para este psicologo. Informe explicitamente qual assinatura deve ser cancelada apos revisar o Asaas.",
+      {
+        code: scopedContext.conflict.code,
+        details: scopedContext.conflict,
+      },
+    );
+  }
+  const currentRecord = scopedContext.currentRecord;
+  const currentFinancialSnapshot = scopedContext.currentFinancialSnapshot;
   const subscriptionId =
     normalizeString(payload.asaasSubscriptionId) ||
     normalizeString(currentRecord?.asaas_subscription_id) ||
-    normalizeString(actorContext.currentFinancialSnapshot?.subscriptionId);
+    normalizeString(currentFinancialSnapshot?.subscriptionId);
 
   if (!subscriptionId) {
     throw new HttpError(404, "Nenhuma assinatura ativa foi encontrada para cancelar.", {
@@ -2204,7 +2456,7 @@ export async function cancelSubscriptionPlanOnAsaas(payload = {}, options = {}) 
   }
 
   const currentStatus = normalizeStatusToken(
-    currentRecord?.status_assinatura || actorContext.currentFinancialSnapshot?.status,
+    currentRecord?.status_assinatura || currentFinancialSnapshot?.status,
   );
 
   if (isTerminalSubscriptionStatus(currentStatus)) {
@@ -2228,7 +2480,7 @@ export async function cancelSubscriptionPlanOnAsaas(payload = {}, options = {}) 
   }
 
   const currentPlanSlug = normalizePlanSlug(
-    currentRecord?.plano_slug || actorContext.currentFinancialSnapshot?.planSlug,
+    currentRecord?.plano_slug || currentFinancialSnapshot?.planSlug,
   );
   if (!currentPlanSlug) {
     throw new HttpError(500, "Nao foi possivel identificar o plano atual para concluir o cancelamento.", {
@@ -2241,9 +2493,9 @@ export async function cancelSubscriptionPlanOnAsaas(payload = {}, options = {}) 
 
   const currentPlanDefinition = resolveSubscriptionPlan(currentPlanSlug);
   const accessUntil =
-    actorContext.currentFinancialSnapshot?.active === true || currentRecord?.assinatura_ativa === true
+    currentFinancialSnapshot?.active === true || currentRecord?.assinatura_ativa === true
       ? parseStoredDate(
-          actorContext.currentFinancialSnapshot?.dueDate ||
+          currentFinancialSnapshot?.dueDate ||
             currentRecord?.proximo_vencimento ||
             subscription?.nextDueDate,
         )
@@ -2304,12 +2556,12 @@ export async function cancelSubscriptionPlanOnAsaas(payload = {}, options = {}) 
         value:
           currentPlanDefinition?.value ??
           parseMoney(currentRecord?.valor_plano) ??
-          actorContext.currentFinancialSnapshot?.monthlyPrice ??
+          currentFinancialSnapshot?.monthlyPrice ??
           0,
       },
       asaasCustomerId:
         normalizeString(currentRecord?.asaas_customer_id) ||
-        normalizeString(actorContext.currentFinancialSnapshot?.customerId) ||
+        normalizeString(currentFinancialSnapshot?.customerId) ||
         normalizeString(subscription?.customer) ||
         null,
       asaasSubscriptionId: subscriptionId,
@@ -2318,7 +2570,7 @@ export async function cancelSubscriptionPlanOnAsaas(payload = {}, options = {}) 
         normalizeString(subscription?.billingType) ||
         resolveBillingTypeFromSources(
           currentRecord,
-          actorContext.currentFinancialSnapshot,
+          currentFinancialSnapshot,
           actorContext.adminRow,
           actorContext.clinicRow,
         ),
@@ -2417,9 +2669,22 @@ export async function handleAsaasWebhook(payload, options = {}) {
     const config = getAsaasConfig(env);
     const asaasSubscriptionId =
       normalizeString(payment?.subscription) || normalizeString(subscriptionPayload?.id) || "";
-    const subscriptionDetails = asaasSubscriptionId
-      ? await fetchSubscriptionById(config, asaasSubscriptionId)
-      : null;
+    let subscriptionDetails = null;
+
+    if (asaasSubscriptionId) {
+      try {
+        subscriptionDetails = await fetchSubscriptionById(config, asaasSubscriptionId);
+      } catch (error) {
+        logAsaasEvent("webhook_subscription_fetch_failed_non_blocking", {
+          eventId,
+          eventType,
+          asaasSubscriptionId,
+          code: error instanceof HttpError ? error.code : "ASAAS_SUBSCRIPTION_FETCH_FAILED",
+          status: error instanceof HttpError ? error.status : null,
+          message: error instanceof Error ? error.message : "Unknown subscription fetch error",
+        });
+      }
+    }
 
     if (!asaasSubscriptionId) {
       await finalizeAsaasWebhookEvent(
@@ -2447,31 +2712,65 @@ export async function handleAsaasWebhook(payload, options = {}) {
 
     const webhookSummary = extractWebhookSubscriptionSummary(payload, subscriptionDetails);
 
-    await persistAsaasSubscriptionState(
-      {
-        asaasCustomerId: webhookSummary.asaasCustomerId,
-        asaasSubscriptionId: webhookSummary.asaasSubscriptionId,
-        asaasPaymentId: webhookSummary.asaasPaymentId,
-        paymentStatus: webhookSummary.paymentStatus,
-        subscriptionStatus: webhookSummary.subscriptionStatus,
-        paymentMethod: webhookSummary.paymentMethod,
-        nextDueDate: webhookSummary.nextDueDate,
+    try {
+      await persistAsaasSubscriptionState(
+        {
+          asaasCustomerId: webhookSummary.asaasCustomerId,
+          asaasSubscriptionId: webhookSummary.asaasSubscriptionId,
+          asaasPaymentId: webhookSummary.asaasPaymentId,
+          paymentStatus: webhookSummary.paymentStatus,
+          subscriptionStatus: webhookSummary.subscriptionStatus,
+          paymentMethod: webhookSummary.paymentMethod,
+          nextDueDate: webhookSummary.nextDueDate,
+          eventId,
+          eventType,
+          asaasPayload: {
+            event: payload,
+            payment,
+            subscription: subscriptionDetails || subscriptionPayload || null,
+          },
+          metadata: {
+            planName:
+              normalizeString(subscriptionDetails?.description) ||
+              normalizeString(subscriptionPayload?.description) ||
+              null,
+          },
+        },
+        env,
+      );
+    } catch (error) {
+      if (!isSubscriptionPlanResolutionError(error)) {
+        throw error;
+      }
+
+      await finalizeAsaasWebhookEvent(
+        {
+          eventId,
+          status: "processed",
+        },
+        env,
+      );
+
+      logAsaasEvent("webhook_subscription_plan_unresolved_ignored", {
+        code: "SUBSCRIPTION_PLAN_UNRESOLVED",
         eventId,
         eventType,
-        asaasPayload: {
-          event: payload,
-          payment,
-          subscription: subscriptionDetails || subscriptionPayload || null,
-        },
-        metadata: {
-          planName:
-            normalizeString(subscriptionDetails?.description) ||
-            normalizeString(subscriptionPayload?.description) ||
-            null,
-        },
-      },
-      env,
-    );
+        asaasSubscriptionId: webhookSummary.asaasSubscriptionId,
+        asaasPaymentId: webhookSummary.asaasPaymentId,
+        message: error.message,
+      });
+
+      return {
+        received: true,
+        duplicate: false,
+        ignored: true,
+        unresolved: true,
+        code: "SUBSCRIPTION_PLAN_UNRESOLVED",
+        eventId,
+        eventType,
+        asaasSubscriptionId: webhookSummary.asaasSubscriptionId,
+      };
+    }
 
     await propagateWebhookSubscriptionToUserOwner(
       {

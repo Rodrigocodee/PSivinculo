@@ -5,15 +5,18 @@ import { getProfessionalPreviewActionProps } from "@/components/psychologist/Pro
 import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-profile";
 import { toast } from "@/components/ui/sonner";
 import {
-  buscarFinanceiroPsicologo,
-  type PacienteFinanceiroOption,
-  type PagamentoNormalizado,
-} from "@/services/financeiro";
+  getPsychologistFinancialSummary,
+  PSYCHOLOGIST_PAYMENT_STATUS_LABELS,
+  type PsychologistConsultationRecord,
+  type PsychologistFinancialPatientOption,
+  type PsychologistFinancialStatusFilter,
+} from "@/services/psychologistFinancialData";
 import {
   abrirReciboParaImpressao,
   montarPreviewRecibo,
   type ReciboPagamentoPreview,
 } from "@/services/recibos";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 
 type ReceiptFormState = {
   patientId: string;
@@ -67,78 +70,88 @@ function parseCurrencyInput(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function getPaymentStatusBadgeClassName(
+  status: PsychologistConsultationRecord["paymentStatus"],
+) {
+  if (status === "pago") return "bg-success/10 text-success";
+  if (status === "aguardando_pagamento") return "bg-warning/10 text-warning";
+  if (status === "vencido" || status === "erro") {
+    return "bg-destructive/10 text-destructive";
+  }
+  return "bg-muted text-muted-foreground";
+}
+
 export default function PsychologistFinancial() {
   const { data: currentProfile } = useCurrentPsychologistProfile();
-  const [payments, setPayments] = useState<PagamentoNormalizado[]>([]);
-  const [patients, setPatients] = useState<PacienteFinanceiroOption[]>([]);
+  const [consultations, setConsultations] = useState<PsychologistConsultationRecord[]>([]);
+  const [patients, setPatients] = useState<PsychologistFinancialPatientOption[]>([]);
   const [monthOptions, setMonthOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [selectedMonth, setSelectedMonth] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<PsychologistFinancialStatusFilter>("all");
   const [isLoading, setIsLoading] = useState(true);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [receiptForm, setReceiptForm] = useState<ReceiptFormState>(initialReceiptForm);
   const [receiptPreview, setReceiptPreview] = useState<ReciboPagamentoPreview | null>(null);
+  const [summary, setSummary] = useState({
+    receivedAmount: 0,
+    pendingAmount: 0,
+    paidCount: 0,
+    billedCount: 0,
+  });
 
   useEffect(() => {
+    let active = true;
+
     async function carregarFinanceiro() {
+      setIsLoading(true);
+
       try {
-        const data = await buscarFinanceiroPsicologo();
-        setPayments(data.pagamentos);
-        setPatients(data.pacientes);
+        const data = await getPsychologistFinancialSummary({
+          monthKey: selectedMonth || null,
+          paymentStatus: statusFilter,
+        });
+        if (!active) return;
+
+        setConsultations(data.consultations);
+        setPatients(data.patients);
         setMonthOptions(data.monthOptions);
-        setSelectedMonth((current) => current || data.monthOptions[0]?.value || "");
+        setSummary(data.summary);
+        setSelectedMonth(data.selectedMonth);
       } catch (error) {
         console.error("Erro ao carregar financeiro:", error);
-        setPayments([]);
+        if (!active) return;
+        setConsultations([]);
         setPatients([]);
         setMonthOptions([]);
+        setSummary({
+          receivedAmount: 0,
+          pendingAmount: 0,
+          paidCount: 0,
+          billedCount: 0,
+        });
       } finally {
-        setIsLoading(false);
+        if (active) setIsLoading(false);
       }
     }
 
-    carregarFinanceiro();
-  }, []);
+    void carregarFinanceiro();
+
+    return () => {
+      active = false;
+    };
+  }, [selectedMonth, statusFilter]);
 
   const psychologistName = currentProfile?.fullName?.trim() || "Profissional";
   const psychologistCrp = currentProfile?.crp?.trim() || null;
 
-  const filteredPayments = useMemo(() => {
-    return payments.filter((payment) => {
-      if (selectedMonth && payment.monthKey !== selectedMonth) return false;
-      if (statusFilter === "paid" && payment.status !== "paid") return false;
-      if (statusFilter === "pending" && payment.status !== "pending") return false;
-      return true;
-    });
-  }, [payments, selectedMonth, statusFilter]);
-
-  const stats = useMemo(() => {
-    const totalReceived = filteredPayments
-      .filter((payment) => payment.status === "paid")
-      .reduce((total, payment) => total + payment.amount, 0);
-
-    const totalPending = filteredPayments
-      .filter((payment) => payment.status === "pending")
-      .reduce((total, payment) => total + payment.amount, 0);
-
-    const paidCount = filteredPayments.filter((payment) => payment.status === "paid").length;
-
-    return {
-      totalReceived,
-      totalPending,
-      paidCount,
-      totalCount: filteredPayments.length,
-    };
-  }, [filteredPayments]);
-
   const paymentOptionsForReceipt = useMemo(() => {
-    if (!receiptForm.patientId) return payments;
-    return payments.filter((payment) => payment.patientId === receiptForm.patientId);
-  }, [payments, receiptForm.patientId]);
+    if (!receiptForm.patientId) return consultations;
+    return consultations.filter((payment) => payment.patientId === receiptForm.patientId);
+  }, [consultations, receiptForm.patientId]);
 
   const selectedReceiptPayment = useMemo(
-    () => payments.find((payment) => payment.id === receiptForm.paymentId) || null,
-    [payments, receiptForm.paymentId],
+    () => consultations.find((payment) => payment.id === receiptForm.paymentId) || null,
+    [consultations, receiptForm.paymentId],
   );
 
   const selectedReceiptPatient = useMemo(
@@ -170,7 +183,9 @@ export default function PsychologistFinancial() {
   }
 
   function handleReceiptPatientChange(patientId: string) {
-    const selectedPaymentStillMatches = payments.find((payment) => payment.id === receiptForm.paymentId)?.patientId === patientId;
+    const selectedPaymentStillMatches =
+      consultations.find((payment) => payment.id === receiptForm.paymentId)?.patientId ===
+      patientId;
 
     updateReceiptForm({
       patientId,
@@ -184,7 +199,7 @@ export default function PsychologistFinancial() {
       return;
     }
 
-    const payment = payments.find((item) => item.id === paymentId);
+    const payment = consultations.find((item) => item.id === paymentId);
     if (!payment) {
       updateReceiptForm({ paymentId: "" });
       return;
@@ -193,10 +208,13 @@ export default function PsychologistFinancial() {
     updateReceiptForm({
       paymentId,
       patientId: payment.patientId || receiptForm.patientId,
-      paymentDate: toInputDate(payment.date),
-      amount: payment.amount ? payment.amount.toFixed(2).replace(".", ",") : "",
-      paymentMethod: payment.method === "-" ? "" : payment.method,
-      description: payment.description,
+      paymentDate: toInputDate(payment.consultationDateTime),
+      amount:
+        payment.consultationValue !== null
+          ? payment.consultationValue.toFixed(2).replace(".", ",")
+          : "",
+      paymentMethod: payment.billingTypeLabel,
+      description: payment.descriptionLabel,
     });
   }
 
@@ -256,8 +274,7 @@ export default function PsychologistFinancial() {
           <button
             onClick={openReceiptModal}
             {...getProfessionalPreviewActionProps({
-              description:
-                "A emissao de recibos e o uso operacional do financeiro ficam liberados assim que sua area profissional for ativada.",
+              description: PREVIEW_FEATURE_LOCK_MESSAGE,
             })}
             className="inline-flex items-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-foreground transition-all hover:bg-muted"
           >
@@ -267,9 +284,9 @@ export default function PsychologistFinancial() {
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           {[
-            { label: "Recebido no Mes", value: formatCurrency(stats.totalReceived), icon: TrendingUp, color: "text-success", bg: "bg-success/10" },
-            { label: "Pendente", value: formatCurrency(stats.totalPending), icon: AlertCircle, color: "text-warning", bg: "bg-warning/10" },
-            { label: "Consultas Pagas", value: `${stats.paidCount}/${stats.totalCount}`, icon: DollarSign, color: "text-primary", bg: "bg-primary/10" },
+            { label: "Recebido no Mes", value: formatCurrency(summary.receivedAmount), icon: TrendingUp, color: "text-success", bg: "bg-success/10" },
+            { label: "Pendente", value: formatCurrency(summary.pendingAmount), icon: AlertCircle, color: "text-warning", bg: "bg-warning/10" },
+            { label: "Consultas Pagas", value: `${summary.paidCount}/${summary.billedCount}`, icon: DollarSign, color: "text-primary", bg: "bg-primary/10" },
           ].map((s, i) => (
             <div key={i} className="stat-card">
               <div className="flex items-center justify-between">
@@ -298,12 +315,18 @@ export default function PsychologistFinancial() {
           </select>
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) =>
+              setStatusFilter(e.target.value as PsychologistFinancialStatusFilter)
+            }
             className="bg-transparent text-sm text-muted-foreground outline-none"
           >
             <option value="all">Todos os status</option>
-            <option value="paid">Pago</option>
-            <option value="pending">Pendente</option>
+            <option value="pago">Pago</option>
+            <option value="aguardando_pagamento">Pagamento pendente</option>
+            <option value="vencido">Pagamento vencido</option>
+            <option value="cancelado">Pagamento cancelado</option>
+            <option value="erro">Erro no pagamento</option>
+            <option value="nao_gerado">Sem cobranca</option>
           </select>
         </div>
 
@@ -324,16 +347,16 @@ export default function PsychologistFinancial() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredPayments.length > 0 ? filteredPayments.map((payment) => (
+                  {consultations.length > 0 ? consultations.map((payment) => (
                     <tr key={payment.id} className="border-b border-border transition-colors hover:bg-muted/30">
                       <td className="px-4 py-3 font-medium text-foreground">{payment.patientName}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{formatPaymentDate(payment.date)}</td>
-                      <td className="hidden px-4 py-3 text-muted-foreground md:table-cell">{payment.description}</td>
-                      <td className="hidden px-4 py-3 text-muted-foreground md:table-cell">{payment.method}</td>
-                      <td className="px-4 py-3 text-right font-semibold text-foreground">{formatCurrency(payment.amount)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{formatPaymentDate(payment.consultationDateTime)}</td>
+                      <td className="hidden px-4 py-3 text-muted-foreground md:table-cell">{payment.descriptionLabel}</td>
+                      <td className="hidden px-4 py-3 text-muted-foreground md:table-cell">{payment.billingTypeLabel}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-foreground">{formatCurrency(payment.consultationValue ?? 0)}</td>
                       <td className="px-4 py-3 text-right">
-                        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${payment.status === "paid" ? "bg-success/10 text-success" : payment.status === "pending" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"}`}>
-                          {payment.status === "paid" ? "Pago" : payment.status === "pending" ? "Pendente" : "Outro"}
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getPaymentStatusBadgeClassName(payment.paymentStatus)}`}>
+                          {PSYCHOLOGIST_PAYMENT_STATUS_LABELS[payment.paymentStatus]}
                         </span>
                       </td>
                     </tr>
@@ -390,7 +413,7 @@ export default function PsychologistFinancial() {
                     <option value="">Preencher manualmente</option>
                     {paymentOptionsForReceipt.map((payment) => (
                       <option key={payment.id} value={payment.id}>
-                        {payment.patientName} - {formatPaymentDate(payment.date)} - {formatCurrency(payment.amount)}
+                        {payment.patientName} - {formatPaymentDate(payment.consultationDateTime)} - {formatCurrency(payment.consultationValue ?? 0)}
                       </option>
                     ))}
                   </select>
@@ -445,8 +468,7 @@ export default function PsychologistFinancial() {
                     type="button"
                     onClick={gerarPreviewRecibo}
                     {...getProfessionalPreviewActionProps({
-                      description:
-                        "A geracao de recibos reais faz parte do acesso profissional completo. Escolha um plano para liberar essa etapa.",
+                      description: PREVIEW_FEATURE_LOCK_MESSAGE,
                     })}
                     className="rounded-xl gradient-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-all hover:opacity-90"
                   >
@@ -456,8 +478,7 @@ export default function PsychologistFinancial() {
                     type="button"
                     onClick={handlePrintReceipt}
                     {...getProfessionalPreviewActionProps({
-                      description:
-                        "A emissao e impressao de recibos estao bloqueadas no modo preview. Libere o acesso para usar o financeiro de forma real.",
+                      description: PREVIEW_FEATURE_LOCK_MESSAGE,
                     })}
                     className="rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-foreground transition-all hover:bg-muted"
                   >

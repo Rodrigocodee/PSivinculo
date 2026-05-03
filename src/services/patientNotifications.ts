@@ -106,3 +106,15 @@ export async function markPatientNotificationsAsRead(notificationIds: string[]) 
 
   if (error) throw error;
 }
+
+export async function markAllPatientNotificationsAsRead() {
+  const { error } = await supabase.rpc("mark_all_my_notifications_as_read");
+
+  if (error) throw error;
+}
+
+export async function clearPatientNotifications() {
+  const { error } = await supabase.rpc("clear_my_notifications");
+
+  if (error) throw error;
+}

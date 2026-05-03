@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
   const getPsychologistServiceScope = vi.fn(async () => ({
     userId: "psi-auth-1",
     psychologistId: "psi-auth-1",
+    psychologistIds: ["psi-auth-1"],
     clinicId: null,
   }));
 
@@ -73,7 +74,9 @@ vi.mock("@/lib/supabase", () => ({
 }));
 
 import {
+  clearPsychologistNotifications,
   listPsychologistNotifications,
+  markAllPsychologistNotificationsAsRead,
   markPsychologistNotificationsAsRead,
 } from "@/services/psychologistNotifications";
 
@@ -153,5 +156,17 @@ describe("psychologistNotifications", () => {
     await markPsychologistNotificationsAsRead([" ", ""]);
 
     expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+
+  it("marks all psychologist notifications as read through the backend rpc", async () => {
+    await markAllPsychologistNotificationsAsRead();
+
+    expect(mocks.rpc).toHaveBeenCalledWith("mark_all_my_notifications_as_read");
+  });
+
+  it("clears psychologist notifications through the backend rpc", async () => {
+    await clearPsychologistNotifications();
+
+    expect(mocks.rpc).toHaveBeenCalledWith("clear_my_notifications");
   });
 });

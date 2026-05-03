@@ -6,6 +6,7 @@ import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-
 import { formatPhone } from "@/lib/formatters";
 import { listarConsultasPacientes } from "@/services/consultas";
 import { listarPacientes } from "@/services/pacientes";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Search, Eye, FileText, Copy, Link2 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -161,8 +162,7 @@ export default function PsychologistPatients() {
           <Link
             to="/psi/pacientes/novo"
             {...getProfessionalPreviewActionProps({
-              description:
-                "Para cadastrar pacientes reais e liberar a gestao completa da sua carteira, escolha um plano e libere sua area profissional.",
+              description: PREVIEW_FEATURE_LOCK_MESSAGE,
             })}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl gradient-primary text-primary-foreground font-semibold text-sm hover:opacity-90 transition-all"
           >

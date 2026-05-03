@@ -9,6 +9,13 @@ import {
   type AppointmentModality,
 } from "@/services/psychologistConsultationSettings";
 import {
+  buildAvailableTimeSlots,
+  formatDateKey,
+  getDefaultWorkingHours,
+  getNextActiveDate,
+  getScheduleDayByDate,
+} from "@/services/psychologistAvailability";
+import {
   fetchPatientAppointmentsData,
   patientAppointmentsQueryKey,
   respondPatientCounterproposal,
@@ -60,6 +67,17 @@ function formatDateTime(value: string | null) {
   };
 }
 
+function formatCurrency(value: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "Valor nao informado";
+  }
+
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(value);
+}
+
 function getInitialRequestModality(
   allowsPresential: boolean | undefined,
   allowsOnline: boolean | undefined,
@@ -88,6 +106,25 @@ function canPatientRespondToScheduleChange(appointment: PatientAppointment) {
   const status = normalizeStatus(appointment.status);
 
   return status === "contraproposta" || status === "reagendada";
+}
+
+function canPayAppointment(appointment: PatientAppointment) {
+  return (
+    normalizeStatus(appointment.paymentStatus || "") === "aguardando_pagamento" &&
+    Boolean(appointment.paymentUrl)
+  );
+}
+
+function getPaymentStatusLabel(appointment: PatientAppointment) {
+  if (normalizeStatus(appointment.paymentStatus || "") === "aguardando_pagamento") {
+    return "Pagamento pendente";
+  }
+
+  if (normalizeStatus(appointment.paymentStatus || "") === "pago") {
+    return "Pago";
+  }
+
+  return "";
 }
 
 function getScheduleChangeResponseVariant(appointment: PatientAppointment) {
@@ -132,11 +169,10 @@ function getActionLabel(appointment: PatientAppointment) {
   return "Sem acoes";
 }
 
-function getDefaultRequestDate() {
+function getDefaultRequestDateFromSchedule() {
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
-
-  return formatDateInputValue(tomorrow);
+  return formatDateInputValue(getNextActiveDate(getDefaultWorkingHours(), tomorrow));
 }
 
 function getMinRequestDate() {
@@ -165,8 +201,8 @@ export default function PatientAppointments() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [isRequestOpen, setIsRequestOpen] = useState(false);
-  const [requestDate, setRequestDate] = useState(getDefaultRequestDate);
-  const [requestTime, setRequestTime] = useState("08:00");
+  const [requestDate, setRequestDate] = useState(getDefaultRequestDateFromSchedule);
+  const [requestTime, setRequestTime] = useState("");
   const [requestModality, setRequestModality] = useState<AppointmentModality | null>("presencial");
   const [requestNotes, setRequestNotes] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -184,10 +220,33 @@ export default function PatientAppointments() {
   const patientName = data?.patient.fullName || "Paciente";
   const appointments = useMemo(() => data?.appointments ?? [], [data?.appointments]);
   const consultationSettings = data?.consultationSettings || null;
+  const availabilitySettings = data?.availabilitySettings || null;
   const allowsPresential = consultationSettings?.attendsPresential ?? true;
   const allowsOnline = consultationSettings?.attendsOnline ?? true;
   const allowsChoice = allowsPresential && allowsOnline;
   const requestedConsultaId = searchParams.get("consultaId")?.trim() || "";
+  const requestSchedule = useMemo(
+    () => availabilitySettings?.schedule ?? getDefaultWorkingHours(),
+    [availabilitySettings?.schedule],
+  );
+  const requestDurationMinutes =
+    availabilitySettings?.consultationDurationMinutes ??
+    consultationSettings?.consultationDurationMinutes ??
+    50;
+  const selectedRequestDay = useMemo(
+    () => getScheduleDayByDate(requestSchedule, requestDate),
+    [requestDate, requestSchedule],
+  );
+  const requestTimeOptions = useMemo(
+    () =>
+      buildAvailableTimeSlots({
+        dateKey: requestDate,
+        schedule: requestSchedule,
+        consultationDurationMinutes: requestDurationMinutes,
+      }),
+    [requestDate, requestDurationMinutes, requestSchedule],
+  );
+  const isRequestDayActive = selectedRequestDay?.enabled ?? false;
 
   async function openAppointmentDetails(appointmentId: string) {
     const fallbackAppointment = findAppointmentById(appointments, appointmentId);
@@ -256,14 +315,37 @@ export default function PatientAppointments() {
     }
   }, [appointments, isLoading, selectedAppointment]);
 
+  useEffect(() => {
+    if (!isRequestOpen) return;
+
+    if (!isRequestDayActive) {
+      setRequestTime("");
+      return;
+    }
+
+    if (!requestTimeOptions.includes(requestTime)) {
+      setRequestTime(requestTimeOptions[0] || "");
+    }
+  }, [isRequestDayActive, isRequestOpen, requestTime, requestTimeOptions]);
+
   function openRequestModal() {
     if (data && !data.canRequestAppointment) {
       toast.error("Sua conta ainda nao esta vinculada ao psicologo responsavel.");
       return;
     }
 
-    setRequestDate(getDefaultRequestDate());
-    setRequestTime("08:00");
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const nextActiveDate = getNextActiveDate(requestSchedule, tomorrow);
+    const nextDateKey = formatDateKey(nextActiveDate);
+    const nextTimeOptions = buildAvailableTimeSlots({
+      dateKey: nextDateKey,
+      schedule: requestSchedule,
+      consultationDurationMinutes: requestDurationMinutes,
+    });
+
+    setRequestDate(nextDateKey);
+    setRequestTime(nextTimeOptions[0] || "");
     setRequestModality(getInitialRequestModality(allowsPresential, allowsOnline));
     setRequestNotes("");
     setIsRequestOpen(true);
@@ -433,21 +515,52 @@ export default function PatientAppointments() {
                       statusColors[normalizedStatus] || "bg-muted text-muted-foreground";
                     const statusLabel =
                       statusLabels[normalizedStatus] || appointment.status || "Atualizada";
+                    const paymentStatusLabel = getPaymentStatusLabel(appointment);
 
                     return (
                       <tr key={appointment.id} className="border-b border-border transition-colors hover:bg-muted/30">
                         <td className="px-4 py-3 font-medium text-foreground">{date}</td>
                         <td className="px-4 py-3 text-muted-foreground">{time}</td>
                         <td className="hidden px-4 py-3 text-muted-foreground md:table-cell">
-                          {appointment.psychologistName}
+                          <div className="space-y-1">
+                            <p>{appointment.psychologistName}</p>
+                            {typeof appointment.consultationPrice === "number" ? (
+                              <p className="text-xs text-muted-foreground">
+                                Valor: {formatCurrency(appointment.consultationPrice)}
+                              </p>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusClassName}`}>
-                            {statusLabel}
-                          </span>
+                          <div className="flex flex-col items-start gap-1.5">
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusClassName}`}>
+                              {statusLabel}
+                            </span>
+                            {paymentStatusLabel ? (
+                              <span className="rounded-full bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning">
+                                {paymentStatusLabel}
+                              </span>
+                            ) : null}
+                            <span className="text-xs text-muted-foreground md:hidden">
+                              {appointment.psychologistName}
+                              {typeof appointment.consultationPrice === "number"
+                                ? ` - ${formatCurrency(appointment.consultationPrice)}`
+                                : ""}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <div className="flex items-center justify-end gap-3">
+                          <div className="flex flex-col items-end gap-2">
+                            {canPayAppointment(appointment) ? (
+                              <a
+                                href={appointment.paymentUrl || "#"}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="rounded-xl px-3 py-1.5 text-xs font-semibold text-primary-foreground gradient-primary"
+                              >
+                                Pagar consulta
+                              </a>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => void openAppointmentDetails(appointment.id)}
@@ -525,14 +638,33 @@ export default function PatientAppointments() {
                 </div>
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-foreground">Horario desejado</label>
-                  <input
-                    type="time"
+                  <select
                     value={requestTime}
                     onChange={(event) => setRequestTime(event.target.value)}
+                    disabled={!isRequestDayActive || requestTimeOptions.length === 0}
                     className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
-                  />
+                  >
+                    <option value="">
+                      {!isRequestDayActive
+                        ? "Dia sem atendimento configurado"
+                        : requestTimeOptions.length === 0
+                          ? "Sem horarios disponiveis"
+                          : "Selecione um horario"}
+                    </option>
+                    {requestTimeOptions.map((timeOption) => (
+                      <option key={timeOption} value={timeOption}>
+                        {timeOption}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
+
+              {!isRequestDayActive ? (
+                <div className="rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                  Dia sem atendimento configurado.
+                </div>
+              ) : null}
 
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-foreground">Modalidade</label>
@@ -589,7 +721,7 @@ export default function PatientAppointments() {
               <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || !isRequestDayActive || !requestTime}
                   className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   {isSubmitting ? "Enviando..." : "Enviar solicitacao"}
@@ -673,6 +805,22 @@ export default function PatientAppointments() {
                   </span>
                 </div>
               ) : null}
+              {typeof selectedAppointment.consultationPrice === "number" ? (
+                <div className="flex items-start justify-between gap-4">
+                  <span className="text-sm text-muted-foreground">Valor da consulta</span>
+                  <span className="text-right text-sm font-medium text-foreground">
+                    {formatCurrency(selectedAppointment.consultationPrice)}
+                  </span>
+                </div>
+              ) : null}
+              {getPaymentStatusLabel(selectedAppointment) ? (
+                <div className="flex items-start justify-between gap-4">
+                  <span className="text-sm text-muted-foreground">Pagamento</span>
+                  <span className="rounded-full bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning">
+                    {getPaymentStatusLabel(selectedAppointment)}
+                  </span>
+                </div>
+              ) : null}
               {canRespondToScheduleChange && shouldShowOriginalRequestedDate(selectedAppointment) ? (
                 <div className="flex items-start justify-between gap-4">
                   <span className="text-sm text-muted-foreground">
@@ -708,10 +856,15 @@ export default function PatientAppointments() {
                   Essa solicitacao foi recusada pelo psicologo e nao ocupa mais um horario confirmado da sua agenda.
                 </div>
               ) : null}
-                  </>
-                );
-              })()}
-            </div>
+              {canPayAppointment(selectedAppointment) ? (
+                <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-muted-foreground">
+                  Esta consulta possui uma cobranca aguardando pagamento. Voce pode abrir o link de pagamento em uma nova aba.
+                </div>
+              ) : null}
+                   </>
+                 );
+               })()}
+             </div>
 
             {canPatientRespondToScheduleChange(selectedAppointment) ? (
               <div className="mt-6 space-y-3">
@@ -751,13 +904,25 @@ export default function PatientAppointments() {
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                onClick={() => setSelectedAppointment(null)}
-                className="mt-6 w-full rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted"
-              >
-                Fechar
-              </button>
+              <div className="mt-6 space-y-3">
+                {canPayAppointment(selectedAppointment) ? (
+                  <a
+                    href={selectedAppointment.paymentUrl || "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block w-full rounded-xl py-2.5 text-center text-sm font-semibold gradient-primary text-primary-foreground"
+                  >
+                    Pagar consulta
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setSelectedAppointment(null)}
+                  className="w-full rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted"
+                >
+                  Fechar
+                </button>
+              </div>
             )}
           </div>
         </div>

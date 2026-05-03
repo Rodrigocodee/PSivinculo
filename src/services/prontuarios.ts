@@ -1,4 +1,5 @@
 import { getPsychologistServiceScope } from "@/services/psychologistScope";
+import { assertProfessionalAccessFromScope } from "@/services/professionalAccessGuard";
 import { supabase } from "../lib/supabase";
 export const PRONTUARIOS_BUCKET = "prontuarios-anexos";
 
@@ -83,7 +84,7 @@ export async function listarProntuariosPorPaciente(pacienteId: string) {
   let query = supabase
     .from("prontuarios")
     .select("*")
-    .eq("psicologo_id", scope.psychologistId)
+    .in("psicologo_id", scope.psychologistIds)
     .eq("paciente_id", pacienteId)
     .order("data_sessao", { ascending: false });
 
@@ -99,6 +100,7 @@ export async function listarProntuariosPorPaciente(pacienteId: string) {
 
 export async function cadastrarProntuario(prontuario: NovoProntuario) {
   const scope = await getPsychologistServiceScope();
+  assertProfessionalAccessFromScope(scope);
   const { data, error } = await supabase
     .from("prontuarios")
     .insert([
@@ -121,6 +123,7 @@ export async function cadastrarProntuario(prontuario: NovoProntuario) {
 
 export async function uploadAnexoProntuario(file: File, pacienteId: string) {
   const scope = await getPsychologistServiceScope();
+  assertProfessionalAccessFromScope(scope);
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const filePath = `${scope.clinicId || "clinica"}/${pacienteId}/${crypto.randomUUID()}-${safeName}`;
 
@@ -138,4 +141,25 @@ export async function uploadAnexoProntuario(file: File, pacienteId: string) {
     path: filePath,
     fileName: file.name,
   };
+}
+
+export async function createProntuarioAttachmentDownloadUrl(
+  filePath: string,
+  expiresInSeconds = 60 * 60,
+) {
+  const normalizedPath = filePath.trim();
+
+  if (!normalizedPath) {
+    return null;
+  }
+
+  const { data, error } = await supabase.storage
+    .from(PRONTUARIOS_BUCKET)
+    .createSignedUrl(normalizedPath, expiresInSeconds);
+
+  if (error) {
+    throw error;
+  }
+
+  return data.signedUrl || null;
 }

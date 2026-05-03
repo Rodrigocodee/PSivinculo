@@ -1,6 +1,13 @@
 import { normalizeEmail, normalizePhoneDigits } from "@/services/auth";
+import { normalizeOnlineSessionLinkInput } from "@/services/onlineSessionLinks";
+import { assertProfessionalAccessFromScope } from "@/services/professionalAccessGuard";
 import { getPsychologistServiceScope } from "@/services/psychologistScope";
 import { supabase } from "../lib/supabase";
+
+const PATIENT_ROOM_LINKS_SELECT =
+    "link_sessao_online, link_sessao_online_paciente, link_sessao_online_psicologo, link_sessao_online_atualizado_em";
+const PATIENT_DETAILS_SELECT =
+    `id, nome, email, telefone, endereco, contato_emergencia, cpf, data_nascimento, observacoes, ativo, ${PATIENT_ROOM_LINKS_SELECT}`;
 
 export type NovoPaciente = {
     nome: string;
@@ -18,6 +25,11 @@ export type VinculoPaciente = {
     psychologistId?: string | null;
 };
 
+export type SalaOnlinePacienteInput = {
+    patientLink?: string | null;
+    psychologistLink?: string | null;
+};
+
 export function normalizeCpfDigits(value: string) {
     return value.replace(/\D/g, "").slice(0, 11);
 }
@@ -25,10 +37,7 @@ export function normalizeCpfDigits(value: string) {
 async function resolveVinculoPaciente(vinculo?: VinculoPaciente) {
     const explicitClinicId = vinculo?.clinicId?.trim() || null;
     const explicitPsychologistId = vinculo?.psychologistId?.trim() || null;
-    const scope =
-        explicitClinicId && explicitPsychologistId
-            ? null
-            : await getPsychologistServiceScope();
+    const scope = await getPsychologistServiceScope();
     const clinicId = explicitClinicId || scope?.clinicId;
     const psychologistId = explicitPsychologistId || scope?.psychologistId;
 
@@ -39,11 +48,13 @@ async function resolveVinculoPaciente(vinculo?: VinculoPaciente) {
     return {
         clinicId,
         psychologistId,
+        hasProfessionalAccess: scope.hasProfessionalAccess,
     };
 }
 
 export async function cadastrarPaciente(paciente: NovoPaciente, vinculo?: VinculoPaciente) {
     const resolvedVinculo = await resolveVinculoPaciente(vinculo);
+    assertProfessionalAccessFromScope(resolvedVinculo);
     const { data, error } = await supabase
         .from("pacientes")
         .insert([
@@ -72,7 +83,7 @@ export async function listarPacientes() {
     let query = supabase
         .from("pacientes")
         .select("id, nome, email, telefone, ativo, data_nascimento, cpf, endereco, contato_emergencia, observacoes, created_at")
-        .eq("psicologo_id", scope.psychologistId)
+        .in("psicologo_id", scope.psychologistIds)
         .order("created_at", { ascending: false });
 
     if (scope.clinicId) {
@@ -89,9 +100,9 @@ export async function buscarPacientePorId(id: string) {
     const scope = await getPsychologistServiceScope();
     let query = supabase
         .from("pacientes")
-        .select("id, nome, email, telefone, endereco, contato_emergencia, cpf, data_nascimento, observacoes, ativo")
+        .select(PATIENT_DETAILS_SELECT)
         .eq("id", id)
-        .eq("psicologo_id", scope.psychologistId)
+        .in("psicologo_id", scope.psychologistIds)
         .maybeSingle();
 
     if (scope.clinicId) {
@@ -101,5 +112,48 @@ export async function buscarPacientePorId(id: string) {
     const { data, error } = await query;
 
     if (error) throw error;
+    return data;
+}
+
+export async function salvarLinksSalaOnlinePaciente(
+    id: string,
+    input: SalaOnlinePacienteInput,
+) {
+    const normalizedPatientId = id.trim();
+
+    if (!normalizedPatientId) {
+        throw new Error("Nao foi possivel identificar o paciente para salvar os links da sala online.");
+    }
+
+    const scope = await getPsychologistServiceScope();
+    assertProfessionalAccessFromScope(scope);
+    const normalizedPatientLink = normalizeOnlineSessionLinkInput(input?.patientLink);
+    const normalizedPsychologistLink = normalizeOnlineSessionLinkInput(input?.psychologistLink);
+    const payload = {
+        link_sessao_online_paciente: normalizedPatientLink,
+        link_sessao_online_psicologo: normalizedPsychologistLink,
+        link_sessao_online_atualizado_em: new Date().toISOString(),
+    };
+
+    let query = supabase
+        .from("pacientes")
+        .update(payload)
+        .eq("id", normalizedPatientId)
+        .in("psicologo_id", scope.psychologistIds);
+
+    if (scope.clinicId) {
+        query = query.eq("clinica_id", scope.clinicId);
+    }
+
+    const { data, error } = await query
+        .select(PATIENT_DETAILS_SELECT)
+        .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data) {
+        throw new Error("Nao foi possivel localizar o paciente para salvar os links da sala online.");
+    }
+
     return data;
 }

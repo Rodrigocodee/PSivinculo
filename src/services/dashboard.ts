@@ -6,6 +6,8 @@ type DashboardConsulta = {
   paciente_id: string;
   data_consulta: string;
   status: string;
+  status_pagamento?: string | null;
+  valor_consulta?: number | string | null;
   observacoes?: string | null;
   pacientes?: {
     id: string;
@@ -19,13 +21,6 @@ type DashboardPaciente = {
   created_at?: string | null;
 };
 
-type DashboardPagamento = Record<string, unknown>;
-
-function getPaymentStatus(payment: DashboardPagamento) {
-  const raw = payment.status;
-  return typeof raw === "string" ? raw.trim().toLowerCase() : "";
-}
-
 function formatDateKey(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -33,30 +28,8 @@ function formatDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function getNumericPaymentValue(payment: DashboardPagamento) {
-  const possibleKeys = ["valor", "amount", "valor_pago", "total", "preco"];
-
-  for (const key of possibleKeys) {
-    const raw = payment[key];
-    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-    if (typeof raw === "string") {
-      const parsed = Number(raw);
-      if (!Number.isNaN(parsed)) return parsed;
-    }
-  }
-
-  return 0;
-}
-
-function getPaymentDate(payment: DashboardPagamento) {
-  const possibleKeys = ["data_pagamento", "data", "created_at", "updated_at", "data_vencimento"];
-
-  for (const key of possibleKeys) {
-    const raw = payment[key];
-    if (typeof raw === "string" && raw) return raw;
-  }
-
-  return null;
+function normalizeStatus(value: string | null | undefined) {
+  return value?.trim().toLowerCase() || "";
 }
 
 function isSameMonth(dateString: string | null, reference: Date) {
@@ -67,8 +40,39 @@ function isSameMonth(dateString: string | null, reference: Date) {
 }
 
 function isClosedConsultaStatus(status: string | null | undefined) {
-  const normalizedStatus = status?.trim().toLowerCase() || "";
+  const normalizedStatus = normalizeStatus(status);
   return normalizedStatus === "cancelada" || normalizedStatus === "recusada";
+}
+
+function getConsultationValue(consulta: DashboardConsulta) {
+  const raw = consulta.valor_consulta;
+
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return raw;
+  }
+
+  if (typeof raw === "string" && raw.trim()) {
+    const normalizedValue = raw.trim();
+    let parsed = Number(normalizedValue);
+
+    if (!Number.isFinite(parsed) && /^\d{1,3}(\.\d{3})*,\d+$/.test(normalizedValue)) {
+      parsed = Number(normalizedValue.replace(/\./g, "").replace(",", "."));
+    }
+
+    if (!Number.isFinite(parsed) && /^\d+,\d+$/.test(normalizedValue)) {
+      parsed = Number(normalizedValue.replace(",", "."));
+    }
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
+function getConsultationPaymentStatus(consulta: DashboardConsulta) {
+  return normalizeStatus(consulta.status_pagamento);
 }
 
 export async function buscarDashboardPsicologo() {
@@ -80,18 +84,13 @@ export async function buscarDashboardPsicologo() {
   let pacientesQuery = supabase
     .from("pacientes")
     .select("id, ativo, created_at")
-    .eq("psicologo_id", scope.psychologistId);
+    .in("psicologo_id", scope.psychologistIds);
 
   if (scope.clinicId) {
     pacientesQuery = pacientesQuery.eq("clinica_id", scope.clinicId);
   }
 
-  let pagamentosQuery = supabase.from("pagamentos").select("*");
-  if (scope.clinicId) {
-    pagamentosQuery = pagamentosQuery.eq("clinica_id", scope.clinicId);
-  }
-
-  const [consultasAnoResult, pacientesResult, pagamentosResult] = await Promise.all([
+  const [consultasAnoResult, pacientesResult] = await Promise.all([
     supabase
       .from("consultas")
       .select(`
@@ -99,23 +98,23 @@ export async function buscarDashboardPsicologo() {
         paciente_id,
         data_consulta,
         status,
+        status_pagamento,
+        valor_consulta,
         observacoes,
         pacientes (
           id,
           nome
         )
       `)
-      .eq("psicologo_id", scope.psychologistId)
+      .in("psicologo_id", scope.psychologistIds)
       .gte("data_consulta", `${year}-01-01T00:00:00`)
       .lte("data_consulta", `${year}-12-31T23:59:59`)
       .order("data_consulta", { ascending: true }),
     pacientesQuery,
-    pagamentosQuery,
   ]);
 
   if (consultasAnoResult.error) throw consultasAnoResult.error;
   if (pacientesResult.error) throw pacientesResult.error;
-  if (pagamentosResult.error) throw pagamentosResult.error;
 
   const consultasAno = (consultasAnoResult.data ?? []) as DashboardConsulta[];
   const consultasHoje = consultasAno.filter((consulta) => {
@@ -125,7 +124,12 @@ export async function buscarDashboardPsicologo() {
   const consultasHojeAtivas = consultasHoje.filter((consulta) => !isClosedConsultaStatus(consulta.status));
   const consultasMes = consultasAno.filter((consulta) => isSameMonth(consulta.data_consulta, now));
   const pacientes = (pacientesResult.data ?? []) as DashboardPaciente[];
-  const pagamentos = (pagamentosResult.data ?? []) as DashboardPagamento[];
+  const consultasPagasMes = consultasMes.filter(
+    (consulta) => getConsultationPaymentStatus(consulta) === "pago",
+  );
+  const consultasPendentesMes = consultasMes.filter(
+    (consulta) => getConsultationPaymentStatus(consulta) === "aguardando_pagamento",
+  );
 
   const totalConsultasHoje = consultasHojeAtivas.length;
   const confirmadasHoje = consultasHoje.filter((consulta) => consulta.status === "confirmada").length;
@@ -134,13 +138,15 @@ export async function buscarDashboardPsicologo() {
   const pacientesAtivos = pacientes.filter((paciente) => paciente.ativo).length;
   const pacientesNovosMes = pacientes.filter((paciente) => isSameMonth(paciente.created_at ?? null, now)).length;
 
-  const receitaMes = pagamentos
-    .filter((pagamento) => getPaymentStatus(pagamento) === "pago" && isSameMonth(getPaymentDate(pagamento), now))
-    .reduce((acc, pagamento) => acc + getNumericPaymentValue(pagamento), 0);
+  const receitaMes = consultasPagasMes.reduce(
+    (acc, consulta) => acc + getConsultationValue(consulta),
+    0,
+  );
 
-  const receitaPendente = pagamentos
-    .filter((pagamento) => getPaymentStatus(pagamento) === "pendente")
-    .reduce((acc, pagamento) => acc + getNumericPaymentValue(pagamento), 0);
+  const receitaPendente = consultasPendentesMes.reduce(
+    (acc, consulta) => acc + getConsultationValue(consulta),
+    0,
+  );
 
   const consultasRealizadasMes = consultasMes.filter((consulta) => consulta.status === "realizada").length;
   const consultasCanceladasMes = consultasMes.filter((consulta) => consulta.status === "cancelada").length;
@@ -162,15 +168,13 @@ export async function buscarDashboardPsicologo() {
   const revenueByMonth = Array.from({ length: 12 }, (_, index) => {
     const monthDate = new Date(year, index, 1);
     const label = monthDate.toLocaleDateString("pt-BR", { month: "short" });
-    const value = pagamentos
-      .filter((pagamento) => getPaymentStatus(pagamento) === "pago")
-      .filter((pagamento) => {
-        const dateString = getPaymentDate(pagamento);
-        if (!dateString) return false;
-        const date = new Date(dateString);
+    const value = consultasAno
+      .filter((consulta) => getConsultationPaymentStatus(consulta) === "pago")
+      .filter((consulta) => {
+        const date = new Date(consulta.data_consulta);
         return !Number.isNaN(date.getTime()) && date.getMonth() === index && date.getFullYear() === year;
       })
-      .reduce((acc, pagamento) => acc + getNumericPaymentValue(pagamento), 0);
+      .reduce((acc, consulta) => acc + getConsultationValue(consulta), 0);
 
     return {
       month: label.charAt(0).toUpperCase() + label.slice(1, 3),

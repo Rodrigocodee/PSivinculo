@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => {
 
   const getCurrentPaciente = vi.fn(async () => currentPatient);
   const getPsychologistConsultationSettingsById = vi.fn();
+  const getPsychologistAvailabilityById = vi.fn();
   const resolvePsychologistNameById = vi.fn(async () => "Dra. Camila");
   const rpc = vi.fn(async () => rpcResult);
 
@@ -55,6 +56,7 @@ const mocks = vi.hoisted(() => {
   return {
     getCurrentPaciente,
     getPsychologistConsultationSettingsById,
+    getPsychologistAvailabilityById,
     resolvePsychologistNameById,
     from,
     reset() {
@@ -65,6 +67,7 @@ const mocks = vi.hoisted(() => {
       rpcResult = { data: null, error: null };
       getCurrentPaciente.mockClear();
       getPsychologistConsultationSettingsById.mockReset();
+      getPsychologistAvailabilityById.mockReset();
       resolvePsychologistNameById.mockClear();
       from.mockClear();
       rpc.mockClear();
@@ -107,6 +110,46 @@ vi.mock("@/services/psychologistConsultationSettings", () => ({
     if (normalized === "online") return "online";
 
     return null;
+  },
+}));
+
+vi.mock("@/services/psychologistAvailability", () => ({
+  getPsychologistAvailabilityById: mocks.getPsychologistAvailabilityById,
+  validateAppointmentAvailability: ({
+    dateKey,
+    time,
+    schedule,
+    consultationDurationMinutes,
+  }: {
+    dateKey: string;
+    time: string;
+    schedule: Array<{ key: string; enabled: boolean; start: string; end: string }>;
+    consultationDurationMinutes: number;
+  }) => {
+    const dayDate = new Date(`${dateKey}T12:00:00`);
+    if (Number.isNaN(dayDate.getTime())) {
+      return { ok: false, code: "invalid_datetime", message: "Este horario esta fora da sua disponibilidade configurada." };
+    }
+
+    const dayKey = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"][dayDate.getDay()];
+    const day = schedule.find((item) => item.key === dayKey);
+    if (!day?.enabled) {
+      return { ok: false, code: "inactive_day", message: "Dia sem atendimento configurado." };
+    }
+
+    const [hours, minutes] = time.split(":").map(Number);
+    const [startHours, startMinutes] = day.start.split(":").map(Number);
+    const [endHours, endMinutes] = day.end.split(":").map(Number);
+    const start = hours * 60 + minutes;
+    const end = start + consultationDurationMinutes;
+    const availabilityStart = startHours * 60 + startMinutes;
+    const availabilityEnd = endHours * 60 + endMinutes;
+
+    if (start < availabilityStart || end > availabilityEnd) {
+      return { ok: false, code: "outside_hours", message: "Este horario esta fora da sua disponibilidade configurada." };
+    }
+
+    return { ok: true };
   },
 }));
 
@@ -154,7 +197,7 @@ function buildConsultationSettings(overrides: MutableRecord = {}) {
   return {
     consultationPrice: 180,
     consultationDurationMinutes: 50,
-    consultationModality: "presencial_e_online",
+    consultationModality: "hibrido",
     attendsPresential: true,
     attendsOnline: true,
     presentialLocation: "Sala 1",
@@ -166,6 +209,24 @@ function buildConsultationSettings(overrides: MutableRecord = {}) {
   };
 }
 
+function buildAvailabilitySettings(overrides: MutableRecord = {}) {
+  return {
+    psychologistId: "psi-1",
+    consultationDurationMinutes: 50,
+    sourceTable: "usuarios",
+    schedule: [
+      { key: "segunda", label: "Segunda", dayOfWeek: 1, enabled: true, start: "08:00", end: "18:00" },
+      { key: "terca", label: "Terca", dayOfWeek: 2, enabled: true, start: "08:00", end: "18:00" },
+      { key: "quarta", label: "Quarta", dayOfWeek: 3, enabled: true, start: "08:00", end: "18:00" },
+      { key: "quinta", label: "Quinta", dayOfWeek: 4, enabled: true, start: "08:00", end: "18:00" },
+      { key: "sexta", label: "Sexta", dayOfWeek: 5, enabled: true, start: "08:00", end: "18:00" },
+      { key: "sabado", label: "Sabado", dayOfWeek: 6, enabled: false, start: "08:00", end: "12:00" },
+      { key: "domingo", label: "Domingo", dayOfWeek: 0, enabled: false, start: "08:00", end: "12:00" },
+    ],
+    ...overrides,
+  };
+}
+
 describe("patientAppointments", () => {
   const fetchMock = vi.fn();
 
@@ -173,6 +234,7 @@ describe("patientAppointments", () => {
     mocks.reset();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
+    mocks.getPsychologistAvailabilityById.mockResolvedValue(buildAvailabilitySettings());
   });
 
   it("keeps appointment requests enabled for linked patients without clinica_id", async () => {
@@ -194,10 +256,16 @@ describe("patientAppointments", () => {
         psychologistId: "psi-2",
       }),
     );
+    mocks.getPsychologistAvailabilityById.mockResolvedValue(
+      buildAvailabilitySettings({
+        psychologistId: "psi-2",
+      }),
+    );
 
     const data = await fetchPatientAppointmentsData();
 
     expect(mocks.getPsychologistConsultationSettingsById).toHaveBeenCalledWith("psi-2");
+    expect(mocks.getPsychologistAvailabilityById).toHaveBeenCalledWith("psi-2");
     expect(data.canRequestAppointment).toBe(true);
     expect(data.patient.psychologistId).toBe("psi-2");
     expect(data.patient.clinicId).toBe("");
@@ -222,6 +290,11 @@ describe("patientAppointments", () => {
         attendsPresential: false,
         attendsOnline: true,
         consultationModality: "online",
+      }),
+    );
+    mocks.getPsychologistAvailabilityById.mockResolvedValue(
+      buildAvailabilitySettings({
+        psychologistId: "psi-2",
       }),
     );
     mocks.setInsertResult({
@@ -253,6 +326,7 @@ describe("patientAppointments", () => {
         data_consulta: "2099-04-29T11:00:00",
         data_consulta_solicitada_original: "2099-04-29T11:00:00",
         modalidade_consulta: "online",
+        valor_consulta: 180,
         status: "solicitada",
       }),
     ]);
@@ -261,6 +335,7 @@ describe("patientAppointments", () => {
   it("keeps clinica_id when the patient is linked to a clinic workflow", async () => {
     mocks.setCurrentPatient(buildPatientContext());
     mocks.getPsychologistConsultationSettingsById.mockResolvedValue(buildConsultationSettings());
+    mocks.getPsychologistAvailabilityById.mockResolvedValue(buildAvailabilitySettings());
     mocks.setInsertResult({
       data: [
         {
@@ -268,7 +343,7 @@ describe("patientAppointments", () => {
           paciente_id: "patient-auth-1",
           psicologo_id: "psi-1",
           clinica_id: "clinic-1",
-          data_consulta: "2099-05-02T09:30:00",
+          data_consulta: "2099-05-04T09:30:00",
           status: "solicitada",
         },
       ],
@@ -276,7 +351,7 @@ describe("patientAppointments", () => {
     });
 
     await requestPatientAppointment({
-      requestedDate: "2099-05-02",
+      requestedDate: "2099-05-04",
       requestedTime: "09:30",
       modality: "presencial",
       notes: "",
@@ -287,12 +362,41 @@ describe("patientAppointments", () => {
         paciente_id: "patient-auth-1",
         psicologo_id: "psi-1",
         clinica_id: "clinic-1",
-        data_consulta: "2099-05-02T09:30:00",
-        data_consulta_solicitada_original: "2099-05-02T09:30:00",
+        data_consulta: "2099-05-04T09:30:00",
+        data_consulta_solicitada_original: "2099-05-04T09:30:00",
         modalidade_consulta: "presencial",
+        valor_consulta: 180,
         status: "solicitada",
       }),
     ]);
+  });
+
+  it("blocks requests on inactive days like sunday", async () => {
+    mocks.setCurrentPatient(buildPatientContext());
+    mocks.getPsychologistConsultationSettingsById.mockResolvedValue(buildConsultationSettings());
+    mocks.getPsychologistAvailabilityById.mockResolvedValue(buildAvailabilitySettings());
+
+    await expect(
+      requestPatientAppointment({
+        requestedDate: "2099-05-03",
+        requestedTime: "09:00",
+        modality: "presencial",
+      }),
+    ).rejects.toThrow("Dia sem atendimento configurado.");
+  });
+
+  it("blocks requests outside the configured availability range", async () => {
+    mocks.setCurrentPatient(buildPatientContext());
+    mocks.getPsychologistConsultationSettingsById.mockResolvedValue(buildConsultationSettings());
+    mocks.getPsychologistAvailabilityById.mockResolvedValue(buildAvailabilitySettings());
+
+    await expect(
+      requestPatientAppointment({
+        requestedDate: "2099-05-05",
+        requestedTime: "18:00",
+        modality: "presencial",
+      }),
+    ).rejects.toThrow("Este horario esta fora da sua disponibilidade configurada.");
   });
 
   it("responds to a persisted counterproposal through the backend rpc", async () => {

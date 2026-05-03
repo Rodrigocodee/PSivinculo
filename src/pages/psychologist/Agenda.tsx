@@ -1,22 +1,36 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import {
   getProfessionalPreviewActionProps,
-  usePsychologistProfessionalPreview,
 } from "@/components/psychologist/ProfessionalPreview";
 import { toast } from "@/components/ui/sonner";
 import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-profile";
 import {
   atualizarConsulta,
   cadastrarConsulta,
-  listarConsultasDoDia,
   responderSolicitacaoConsulta,
+  type ConsultationPaymentResult,
 } from "@/services/consultas";
 import { listarPacientes } from "@/services/pacientes";
+import {
+  getPsychologistAgendaData,
+  type PsychologistConsultationPaymentStatus,
+  type PsychologistConsultationRecord,
+} from "@/services/psychologistFinancialData";
 import {
   getConsultationModalityLabel,
   normalizeAppointmentModality,
   type AppointmentModality,
 } from "@/services/psychologistConsultationSettings";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
+import {
+  buildAgendaHourRows,
+  buildAvailableTimeSlots,
+  getCurrentPsychologistAvailability,
+  getDefaultWorkingHours,
+  getNextActiveDate,
+  getScheduleDayByDate,
+  type PsychologistAvailabilitySettings,
+} from "@/services/psychologistAvailability";
 import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -84,7 +98,70 @@ const reverseStatusMap: Record<
   rescheduled: "reagendada",
 };
 
-const hours = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"];
+const paymentStatusLabels: Record<string, string> = {
+  nao_gerado: "Nao gerado",
+  aguardando_pagamento: "Aguardando pagamento",
+  pago: "Pago",
+  vencido: "Vencido",
+  cancelado: "Cancelado",
+  erro: "Erro",
+};
+
+type ConsultationPaymentStatus = PsychologistConsultationPaymentStatus;
+
+const appointmentFinancialStatusPresentation: Record<
+  ConsultationPaymentStatus,
+  {
+    label: string;
+    badgeClassName: string;
+    dotClassName: string;
+    accentClassName: string;
+  }
+> = {
+  pago: {
+    label: "Pago",
+    badgeClassName: "border border-emerald-200 bg-emerald-50 text-emerald-700",
+    dotClassName: "bg-emerald-500",
+    accentClassName: "border-l-emerald-400",
+  },
+  aguardando_pagamento: {
+    label: "Pagamento pendente",
+    badgeClassName: "border border-amber-200 bg-amber-50 text-amber-700",
+    dotClassName: "bg-amber-500",
+    accentClassName: "border-l-amber-400",
+  },
+  vencido: {
+    label: "Pagamento vencido",
+    badgeClassName: "border border-rose-200 bg-rose-50 text-rose-700",
+    dotClassName: "bg-rose-500",
+    accentClassName: "border-l-rose-400",
+  },
+  cancelado: {
+    label: "Pagamento cancelado",
+    badgeClassName: "border border-slate-200 bg-slate-100 text-slate-600",
+    dotClassName: "bg-slate-400",
+    accentClassName: "border-l-slate-300",
+  },
+  erro: {
+    label: "Erro no pagamento",
+    badgeClassName: "border border-red-200 bg-red-50 text-red-700",
+    dotClassName: "bg-red-500",
+    accentClassName: "border-l-red-400",
+  },
+  nao_gerado: {
+    label: "Sem cobranca",
+    badgeClassName: "border border-slate-200 bg-slate-50 text-slate-600",
+    dotClassName: "bg-slate-400",
+    accentClassName: "border-l-slate-300",
+  },
+};
+
+const agendaFinancialLegend: ConsultationPaymentStatus[] = [
+  "pago",
+  "aguardando_pagamento",
+  "vencido",
+  "nao_gerado",
+];
 
 type ConsultaDoDia = {
   id: string;
@@ -100,11 +177,20 @@ type ConsultaDoDia = {
   type: string;
   room: string;
   notes: string;
+  consultationValue: number | null;
+  paymentStatus: ConsultationPaymentStatus;
+  invoiceUrl: string | null;
+  bankSlipUrl: string | null;
 };
 
 type PacienteOption = {
   id: string;
   nome: string;
+};
+
+type ConsultationPaymentFeedback = {
+  patientName: string;
+  payment: ConsultationPaymentResult;
 };
 
 const initialAppointmentForm = {
@@ -133,7 +219,14 @@ function getAppointmentType(status: keyof typeof statusLabels, modality: Appoint
   return "Sessao Individual";
 }
 
-function getAppointmentRoom(status: keyof typeof statusLabels, modality: AppointmentModality | null) {
+function getAppointmentRoom(
+  status: keyof typeof statusLabels,
+  modality: AppointmentModality | null,
+  presentialLocation?: string | null,
+) {
+  if (modality === "presencial" && presentialLocation?.trim()) {
+    return presentialLocation.trim();
+  }
   if (modality === "presencial") return "Presencial";
   if (modality === "online") return "Online";
   if (status === "requested") return "A confirmar";
@@ -156,6 +249,67 @@ function formatDisplayDate(date: Date) {
   });
 }
 
+function getStartOfWeek(referenceDate: Date) {
+  const start = new Date(referenceDate);
+  const day = start.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  start.setDate(start.getDate() + diff);
+  start.setHours(0, 0, 0, 0);
+  return start;
+}
+
+function getEndOfWeek(referenceDate: Date) {
+  const end = getStartOfWeek(referenceDate);
+  end.setDate(end.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
+function formatWeekRangeLabel(referenceDate: Date) {
+  const start = getStartOfWeek(referenceDate);
+  const end = getEndOfWeek(referenceDate);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const startLabel = start.toLocaleDateString("pt-BR", {
+    day: "numeric",
+    month: sameMonth ? undefined : "short",
+  });
+  const endLabel = end.toLocaleDateString("pt-BR", {
+    day: "numeric",
+    month: "short",
+    year: sameYear ? undefined : "numeric",
+  });
+
+  return `${startLabel} a ${endLabel}`;
+}
+
+function formatMonthLabel(date: Date) {
+  const label = date.toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric",
+  });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function getStartOfMonth(referenceDate: Date) {
+  return new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1, 0, 0, 0, 0);
+}
+
+function getEndOfMonth(referenceDate: Date) {
+  return new Date(referenceDate.getFullYear(), referenceDate.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+
+function formatDaySectionLabel(dateKey: string) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return dateKey;
+
+  return date.toLocaleDateString("pt-BR", {
+    weekday: "long",
+    day: "2-digit",
+    month: "short",
+  });
+}
+
 function formatDateTimeLabel(value: string | null | undefined) {
   if (!value) return "Nao informado";
 
@@ -171,6 +325,15 @@ function formatDateTimeLabel(value: string | null | undefined) {
 function buildDateTimeInputValue(date: string, time: string) {
   const normalizedTime = time.length === 5 ? `${time}:00` : time;
   return `${date}T${normalizedTime}`;
+}
+
+function formatCurrency(value: number | null) {
+  if (value === null) return "Valor nao informado";
+
+  return value.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 }
 
 function mapConsultaToForm(consulta: ConsultaDoDia) {
@@ -189,13 +352,60 @@ function parseDateKey(value: string | null) {
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
 }
 
+function getConsultationPaymentLink(payment: ConsultationPaymentResult) {
+  return payment.invoiceUrl || payment.bankSlipUrl || "";
+}
+
+function getAppointmentPaymentLink(
+  appointment: Pick<ConsultaDoDia, "invoiceUrl" | "bankSlipUrl">,
+) {
+  return appointment.invoiceUrl || appointment.bankSlipUrl || "";
+}
+
+function getConsultationPaymentTitle(payment: ConsultationPaymentResult) {
+  if (payment.paymentMode === "external") {
+    return "Consulta confirmada";
+  }
+
+  if (!payment.success) {
+    return "Consulta confirmada, mas a cobranca falhou";
+  }
+
+  if (payment.reusedExisting) {
+    return "Cobranca ja vinculada";
+  }
+
+  return "Cobranca gerada com sucesso";
+}
+
+function getConsultationPaymentDescription(payment: ConsultationPaymentResult) {
+  if (payment.paymentMode === "external") {
+    return (
+      payment.message || "Pagamento combinado diretamente entre paciente e psicologo."
+    );
+  }
+
+  if (!payment.success) {
+    return (
+      payment.message ||
+      "A consulta foi confirmada, mas a cobranca nao foi gerada automaticamente."
+    );
+  }
+
+  if (payment.reusedExisting) {
+    return payment.message || "Esta consulta ja possuia uma cobranca vinculada.";
+  }
+
+  return payment.message || "A cobranca foi criada e ja pode ser compartilhada com o paciente.";
+}
+
 export default function PsychologistAgenda() {
-  const { isPreviewMode } = usePsychologistProfessionalPreview();
   const { data: profile } = useCurrentPsychologistProfile();
   const [searchParams, setSearchParams] = useSearchParams();
   const [view, setView] = useState<"day" | "week" | "month">("day");
   const [selectedDate, setSelectedDate] = useState(() => parseDateKey(searchParams.get("data")) ?? new Date());
   const [appointments, setAppointments] = useState<ConsultaDoDia[]>([]);
+  const [availabilitySettings, setAvailabilitySettings] = useState<PsychologistAvailabilitySettings | null>(null);
   const [patients, setPatients] = useState<PacienteOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPatientsLoading, setIsPatientsLoading] = useState(true);
@@ -211,14 +421,21 @@ export default function PsychologistAgenda() {
     data: "",
     hora: "08:00",
   });
+  const [paymentFeedback, setPaymentFeedback] = useState<ConsultationPaymentFeedback | null>(null);
   const [appointmentForm, setAppointmentForm] = useState(initialAppointmentForm);
   const [selectedApt, setSelectedApt] = useState<ConsultaDoDia | null>(null);
   const [editingApt, setEditingApt] = useState<ConsultaDoDia | null>(null);
   const psychologistName = profile?.fullName?.trim() || "Profissional";
+  const agendaSchedule = useMemo(
+    () => availabilitySettings?.schedule ?? getDefaultWorkingHours(),
+    [availabilitySettings?.schedule],
+  );
+  const consultationDurationMinutes =
+    availabilitySettings?.consultationDurationMinutes ?? 50;
 
   const selectedDateKey = useMemo(() => formatDateKey(selectedDate), [selectedDate]);
   const visibleAppointments = useMemo(
-    () => appointments.filter((appointment) => !["cancelled", "refused"].includes(appointment.status)),
+    () => appointments.filter((appointment) => appointment.status !== "refused"),
     [appointments],
   );
   const requestedAppointments = useMemo(
@@ -227,63 +444,109 @@ export default function PsychologistAgenda() {
   );
   const requestedConsultaId = searchParams.get("consultaId")?.trim() || "";
   const requestedDateKey = searchParams.get("data")?.trim() || "";
+  const selectedScheduleDay = useMemo(
+    () => getScheduleDayByDate(agendaSchedule, selectedDateKey),
+    [agendaSchedule, selectedDateKey],
+  );
+  const appointmentAvailabilityItems = useMemo(
+    () =>
+      visibleAppointments.map((appointment) => ({
+        id: appointment.id,
+        dateTime: buildDateTimeInputValue(appointment.date, appointment.time),
+        durationMinutes: appointment.duration,
+        status: reverseStatusMap[appointment.status],
+      })),
+    [visibleAppointments],
+  );
+  const appointmentTimeOptions = useMemo(
+    () =>
+      buildAvailableTimeSlots({
+        dateKey: appointmentForm.data,
+        schedule: agendaSchedule,
+        consultationDurationMinutes,
+        existingAppointments: appointmentAvailabilityItems,
+        ignoreAppointmentId: editingApt?.id || null,
+        includeTime: editingApt?.time || null,
+      }),
+    [
+      agendaSchedule,
+      appointmentAvailabilityItems,
+      appointmentForm.data,
+      consultationDurationMinutes,
+      editingApt?.id,
+      editingApt?.time,
+    ],
+  );
+  const counterProposalTimeOptions = useMemo(
+    () =>
+      buildAvailableTimeSlots({
+        dateKey: counterProposalForm.data,
+        schedule: agendaSchedule,
+        consultationDurationMinutes,
+        existingAppointments: appointmentAvailabilityItems,
+        ignoreAppointmentId: selectedApt?.id || null,
+        includeTime: counterProposalForm.hora || null,
+      }),
+    [
+      agendaSchedule,
+      appointmentAvailabilityItems,
+      consultationDurationMinutes,
+      counterProposalForm.data,
+      counterProposalForm.hora,
+      selectedApt?.id,
+    ],
+  );
+  const dayHourRows = useMemo(
+    () =>
+      buildAgendaHourRows({
+        dateKey: selectedDateKey,
+        schedule: agendaSchedule,
+        appointmentTimes: visibleAppointments
+          .filter((appointment) => appointment.date === selectedDateKey)
+          .map((appointment) => appointment.time),
+      }),
+    [agendaSchedule, selectedDateKey, visibleAppointments],
+  );
 
-  function mapConsultaFromApi(consulta: Record<string, unknown>): ConsultaDoDia {
-    const rawDateTime = typeof consulta.data_consulta === "string" ? consulta.data_consulta : "";
-    const dataConsulta = new Date(rawDateTime);
-    const normalizedStatus = statusMap[String(consulta.status || "").trim().toLowerCase()] ?? "pending";
-    const modality = normalizeAppointmentModality(
-      typeof consulta.modalidade_consulta === "string" ? consulta.modalidade_consulta : typeof consulta.modalidade === "string" ? consulta.modalidade : null,
-    );
-    const resolvedDuration =
-      typeof consulta.duracao_consulta_min === "number"
-        ? consulta.duracao_consulta_min
-        : Number(consulta.duracao_consulta_min || 50) || 50;
-
-    const pacientes =
-      consulta.pacientes && typeof consulta.pacientes === "object" && !Array.isArray(consulta.pacientes)
-        ? (consulta.pacientes as Record<string, unknown>)
-        : null;
+  function mapConsultaFromService(
+    consulta: PsychologistConsultationRecord,
+  ): ConsultaDoDia {
+    const normalizedStatus = statusMap[consulta.consultationStatus] ?? "pending";
 
     return {
-      id: String(consulta.id || ""),
-      patientId: String(consulta.paciente_id || ""),
-      patientName: typeof pacientes?.nome === "string" && pacientes.nome.trim() ? pacientes.nome.trim() : "Paciente",
-      date: formatDateKey(dataConsulta),
-      time: dataConsulta.toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      requestedDateTimeOriginal:
-        typeof consulta.data_consulta_solicitada_original === "string" && consulta.data_consulta_solicitada_original.trim()
-          ? consulta.data_consulta_solicitada_original
-          : rawDateTime || null,
-      respondedAt:
-        typeof consulta.respondida_em === "string" && consulta.respondida_em.trim()
-          ? consulta.respondida_em
-          : null,
-      duration: resolvedDuration,
+      id: consulta.id,
+      patientId: consulta.patientId,
+      patientName: consulta.patientName,
+      date: consulta.consultationDateKey,
+      time: consulta.consultationTimeLabel,
+      requestedDateTimeOriginal: consulta.requestedDateTimeOriginal,
+      respondedAt: consulta.respondedAt,
+      duration: consulta.durationMinutes,
       status: normalizedStatus,
-      modality,
-      type: getAppointmentType(normalizedStatus, modality),
-      room: getAppointmentRoom(normalizedStatus, modality),
-      notes: typeof consulta.observacoes === "string" ? consulta.observacoes : "",
+      modality: consulta.modality,
+      type: getAppointmentType(normalizedStatus, consulta.modality),
+      room: consulta.roomLabel,
+      notes: consulta.notes,
+      consultationValue: consulta.consultationValue,
+      paymentStatus: consulta.paymentStatus,
+      invoiceUrl: consulta.invoiceUrl,
+      bankSlipUrl: consulta.bankSlipUrl,
     };
   }
 
   async function carregarConsultas() {
-    if (view !== "day") {
-      setIsLoading(false);
-      return;
-    }
-
     setIsLoading(true);
 
     try {
-      const consultas = await listarConsultasDoDia(selectedDateKey, {
-        syncStatuses: !isPreviewMode,
-      });
-      setAppointments(((consultas as Record<string, unknown>[]) ?? []).map(mapConsultaFromApi));
+      const [data, availability] = await Promise.all([
+        getPsychologistAgendaData({
+          mode: view,
+          referenceDate: selectedDateKey,
+        }),
+        getCurrentPsychologistAvailability(),
+      ]);
+      setAppointments(data.consultations.map(mapConsultaFromService));
+      setAvailabilitySettings(availability);
     } catch (error) {
       console.error("Erro ao carregar consultas:", error);
       setAppointments([]);
@@ -294,7 +557,7 @@ export default function PsychologistAgenda() {
 
   useEffect(() => {
     void carregarConsultas();
-  }, [isPreviewMode, selectedDateKey, view]);
+  }, [selectedDateKey, view]);
 
   useEffect(() => {
     const targetDate = parseDateKey(requestedDateKey);
@@ -369,18 +632,121 @@ export default function PsychologistAgenda() {
     setIsCounterProposalOpen(false);
   }, [selectedApt]);
 
-  function goToPreviousDay() {
+  useEffect(() => {
+    if (!isCreateOpen && !isEditOpen) return;
+
+    if (!appointmentTimeOptions.includes(appointmentForm.hora)) {
+      setAppointmentForm((current) => ({
+        ...current,
+        hora: appointmentTimeOptions[0] || "",
+      }));
+    }
+  }, [appointmentForm.hora, appointmentTimeOptions, isCreateOpen, isEditOpen]);
+
+  useEffect(() => {
+    if (!selectedApt || !isCounterProposalOpen) return;
+
+    if (!counterProposalTimeOptions.includes(counterProposalForm.hora)) {
+      setCounterProposalForm((current) => ({
+        ...current,
+        hora: counterProposalTimeOptions[0] || "",
+      }));
+    }
+  }, [
+    counterProposalForm.hora,
+    counterProposalTimeOptions,
+    isCounterProposalOpen,
+    selectedApt,
+  ]);
+
+  const selectedPeriodLabel = useMemo(() => {
+    if (view === "week") return formatWeekRangeLabel(selectedDate);
+    if (view === "month") return formatMonthLabel(selectedDate);
+    return formatDisplayDate(selectedDate);
+  }, [selectedDate, view]);
+
+  const weekSections = useMemo(() => {
+    const weekStart = getStartOfWeek(selectedDate);
+
+    return Array.from({ length: 7 }, (_, index) => {
+      const currentDate = new Date(weekStart);
+      currentDate.setDate(weekStart.getDate() + index);
+      const dateKey = formatDateKey(currentDate);
+      const scheduleDay = getScheduleDayByDate(agendaSchedule, dateKey);
+
+      return {
+        dateKey,
+        label: formatDaySectionLabel(dateKey),
+        isWorkingDay: scheduleDay?.enabled ?? false,
+        appointments: visibleAppointments
+          .filter((appointment) => appointment.date === dateKey)
+          .sort((left, right) => left.time.localeCompare(right.time)),
+      };
+    });
+  }, [agendaSchedule, selectedDate, visibleAppointments]);
+
+  const monthSections = useMemo(() => {
+    const monthStart = getStartOfMonth(selectedDate);
+    const monthEnd = getEndOfMonth(selectedDate);
+
+    return Array.from({ length: monthEnd.getDate() }, (_, index) => {
+      const currentDate = new Date(monthStart);
+      currentDate.setDate(index + 1);
+      const dateKey = formatDateKey(currentDate);
+      const scheduleDay = getScheduleDayByDate(agendaSchedule, dateKey);
+      const grouped = visibleAppointments
+        .filter((appointment) => appointment.date === dateKey)
+        .sort((left, right) => left.time.localeCompare(right.time));
+
+      return {
+        dateKey,
+        label: formatDaySectionLabel(dateKey),
+        isWorkingDay: scheduleDay?.enabled ?? false,
+        appointments: grouped,
+      };
+    });
+  }, [agendaSchedule, selectedDate, visibleAppointments]);
+
+  function goToPreviousPeriod() {
     setSelectedDate((current) => {
       const next = new Date(current);
-      next.setDate(current.getDate() - 1);
+      if (view === "month") {
+        const currentDay = next.getDate();
+        next.setDate(1);
+        next.setMonth(current.getMonth() - 1);
+        const lastDayOfTargetMonth = new Date(
+          next.getFullYear(),
+          next.getMonth() + 1,
+          0,
+        ).getDate();
+        next.setDate(Math.min(currentDay, lastDayOfTargetMonth));
+      } else if (view === "week") {
+        next.setDate(current.getDate() - 7);
+      } else {
+        next.setDate(current.getDate() - 1);
+      }
       return next;
     });
   }
 
-  function goToNextDay() {
+  function goToNextPeriod() {
     setSelectedDate((current) => {
       const next = new Date(current);
-      next.setDate(current.getDate() + 1);
+      if (view === "month") {
+        const currentDay = next.getDate();
+        next.setDate(1);
+        next.setMonth(current.getMonth() + 1);
+        const lastDayOfTargetMonth = new Date(
+          next.getFullYear(),
+          next.getMonth() + 1,
+          0,
+        ).getDate();
+        next.setDate(Math.min(currentDay, lastDayOfTargetMonth));
+      } else if (view === "week") {
+        next.setDate(current.getDate() + 7);
+      } else {
+        next.setDate(current.getDate() + 1);
+      }
       return next;
     });
   }
@@ -389,13 +755,119 @@ export default function PsychologistAgenda() {
     setSelectedDate(new Date());
   }
 
+  function openAppointmentDetails(appointment: ConsultaDoDia) {
+    setIsCreateOpen(false);
+    setIsEditOpen(false);
+    setSelectedApt(appointment);
+  }
+
+  function renderAppointmentCard(
+    appointment: ConsultaDoDia,
+    options?: { compact?: boolean },
+  ) {
+    const compact = options?.compact ?? false;
+    const paymentPresentation =
+      appointmentFinancialStatusPresentation[appointment.paymentStatus];
+    const paymentLink = getAppointmentPaymentLink(appointment);
+    const canManagePendingCharge =
+      appointment.paymentStatus === "aguardando_pagamento" && Boolean(paymentLink);
+
+    return (
+      <div
+        className={`rounded-2xl border border-border/80 border-l-4 bg-gradient-to-br from-card via-card to-muted/20 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${paymentPresentation.accentClassName}`}
+      >
+        <button
+          type="button"
+          onClick={() => openAppointmentDetails(appointment)}
+          className="w-full text-left"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-base font-semibold text-foreground">
+                {appointment.patientName}
+              </p>
+              <p className="mt-1 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                {appointment.type}
+              </p>
+            </div>
+            <div className="rounded-xl bg-primary/5 px-3 py-2 text-right shadow-sm ring-1 ring-primary/10">
+              <p className="text-lg font-semibold leading-none text-foreground">
+                {appointment.time}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {appointment.duration} min
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
+            <span>
+              {appointment.modality
+                ? getConsultationModalityLabel(appointment.modality)
+                : "Modalidade a definir"}
+            </span>
+            <span>{formatCurrency(appointment.consultationValue)}</span>
+            <span>{appointment.room}</span>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusColors[appointment.status]}`}
+            >
+              {statusLabels[appointment.status]}
+            </span>
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${paymentPresentation.badgeClassName}`}
+            >
+              {paymentPresentation.label}
+            </span>
+          </div>
+        </button>
+
+        {canManagePendingCharge ? (
+          <div
+            className={`mt-4 flex flex-wrap gap-2 border-t border-border/70 pt-3 ${compact ? "sm:justify-start" : ""}`}
+          >
+            <button
+              type="button"
+              onClick={() => void copyPaymentLink(paymentLink)}
+              className="rounded-xl border border-border px-3 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-muted"
+            >
+              Copiar link
+            </button>
+            <button
+              type="button"
+              onClick={() => openPaymentLink(paymentLink)}
+              className="rounded-xl bg-muted px-3 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-muted/80"
+            >
+              Abrir cobranca
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function openCreateModal() {
     setIsEditOpen(false);
     setEditingApt(null);
     setSelectedApt(null);
+    const referenceDate = new Date(`${selectedDateKey}T12:00:00`);
+    const nextActiveDate = getNextActiveDate(
+      agendaSchedule,
+      Number.isNaN(referenceDate.getTime()) ? new Date() : referenceDate,
+    );
+    const nextDateKey = formatDateKey(nextActiveDate);
+    const nextTimeOptions = buildAvailableTimeSlots({
+      dateKey: nextDateKey,
+      schedule: agendaSchedule,
+      consultationDurationMinutes,
+      existingAppointments: appointmentAvailabilityItems,
+    });
     setAppointmentForm({
       ...initialAppointmentForm,
-      data: selectedDateKey,
+      data: nextDateKey,
+      hora: nextTimeOptions[0] || "",
     });
     setIsCreateOpen(true);
   }
@@ -415,11 +887,78 @@ export default function PsychologistAgenda() {
     setIsCounterProposalOpen(false);
   }
 
+  async function copyPaymentLink(value: string) {
+    if (!value) {
+      toast.error("O link de pagamento nao esta disponivel.");
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = value;
+        textArea.setAttribute("readonly", "true");
+        textArea.style.position = "absolute";
+        textArea.style.left = "-9999px";
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
+
+      toast.success("Link de pagamento copiado com sucesso.");
+    } catch {
+      toast.error("Nao foi possivel copiar o link de pagamento.");
+    }
+  }
+
+  function openPaymentLink(value: string) {
+    if (!value || typeof window === "undefined") {
+      toast.error("O link de pagamento nao esta disponivel.");
+      return;
+    }
+
+    window.open(value, "_blank", "noopener,noreferrer");
+  }
+
+  function handleConsultationPaymentFeedback(
+    patientName: string,
+    payment: ConsultationPaymentResult | null,
+    fallbackSuccessMessage: string,
+  ) {
+    if (!payment) {
+      toast.success(fallbackSuccessMessage);
+      return;
+    }
+
+    if (payment.paymentMode === "asaas_split" && !payment.success) {
+      toast.error("Consulta confirmada, mas a cobranca nao foi gerada.");
+    } else if (payment.paymentMode === "asaas_split" && payment.reusedExisting) {
+      toast.success("Consulta confirmada. A cobranca ja estava vinculada.");
+    } else if (payment.paymentMode === "asaas_split") {
+      toast.success("Consulta confirmada e cobranca gerada com sucesso.");
+    } else {
+      toast.success(fallbackSuccessMessage);
+    }
+
+    setPaymentFeedback({
+      patientName,
+      payment,
+    });
+  }
+
   async function handleCreateAppointment(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
     if (!appointmentForm.paciente_id) {
       toast.error("Selecione um paciente.");
+      return;
+    }
+
+    if (!appointmentForm.data || !appointmentForm.hora) {
+      toast.error("Este horario esta fora da sua disponibilidade configurada.");
       return;
     }
 
@@ -443,12 +982,16 @@ export default function PsychologistAgenda() {
             time: appointmentForm.hora,
             requestedDateTimeOriginal: `${appointmentForm.data}T${appointmentForm.hora}:00`,
             respondedAt: null,
-            duration: 50,
+            duration: created[0].duracao_consulta_min ?? consultationDurationMinutes,
             status: appointmentForm.status,
             modality: null,
             type: getAppointmentType(appointmentForm.status, null),
             room: getAppointmentRoom(appointmentForm.status, null),
             notes: appointmentForm.observacoes.trim(),
+            consultationValue: null,
+            paymentStatus: "nao_gerado",
+            invoiceUrl: null,
+            bankSlipUrl: null,
           }
         : null;
 
@@ -476,10 +1019,16 @@ export default function PsychologistAgenda() {
     e.preventDefault();
     if (!editingApt) return;
 
+    if (!appointmentForm.data || !appointmentForm.hora) {
+      toast.error("Este horario esta fora da sua disponibilidade configurada.");
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
-      await atualizarConsulta(editingApt.id, {
+      const patientName = editingApt.patientName;
+      const result = await atualizarConsulta(editingApt.id, {
         data_consulta: `${appointmentForm.data}T${appointmentForm.hora}:00`,
         status: reverseStatusMap[appointmentForm.status],
         observacoes: appointmentForm.observacoes.trim() || null,
@@ -503,10 +1052,14 @@ export default function PsychologistAgenda() {
           .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)),
       );
 
-      toast.success("Consulta atualizada com sucesso.");
       setIsEditOpen(false);
       setEditingApt(null);
       await carregarConsultas();
+      handleConsultationPaymentFeedback(
+        patientName,
+        result.payment,
+        "Consulta atualizada com sucesso.",
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Nao foi possivel atualizar a consulta.";
       toast.error(message);
@@ -521,14 +1074,19 @@ export default function PsychologistAgenda() {
     setIsConfirming(true);
 
     try {
-      await responderSolicitacaoConsulta({
+      const patientName = selectedApt.patientName;
+      const result = await responderSolicitacaoConsulta({
         consultaId: selectedApt.id,
         acao: "confirmar",
       });
 
-      toast.success("Solicitacao confirmada com sucesso.");
       closeDetailsModal();
       await carregarConsultas();
+      handleConsultationPaymentFeedback(
+        patientName,
+        result.payment,
+        "Solicitacao confirmada com sucesso.",
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Nao foi possivel confirmar a solicitacao.";
       toast.error(message);
@@ -563,7 +1121,7 @@ export default function PsychologistAgenda() {
     if (!selectedApt) return;
 
     if (!counterProposalForm.data || !counterProposalForm.hora) {
-      toast.error("Informe a nova data e o novo horario da contraproposta.");
+      toast.error("Este horario esta fora da sua disponibilidade configurada.");
       return;
     }
 
@@ -625,8 +1183,7 @@ export default function PsychologistAgenda() {
           <button
             onClick={openCreateModal}
             {...getProfessionalPreviewActionProps({
-              description:
-                "Para criar agendamentos reais na sua agenda profissional, escolha um plano e libere o acesso completo.",
+              description: PREVIEW_FEATURE_LOCK_MESSAGE,
             })}
             className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold gradient-primary text-primary-foreground transition-all hover:opacity-90"
           >
@@ -636,11 +1193,11 @@ export default function PsychologistAgenda() {
 
         <div className="flex flex-col items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 sm:flex-row">
           <div className="flex items-center gap-3">
-            <button onClick={goToPreviousDay} className="rounded-lg p-2 hover:bg-muted">
+            <button onClick={goToPreviousPeriod} className="rounded-lg p-2 hover:bg-muted">
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <h2 className="font-heading font-semibold capitalize text-foreground">{formatDisplayDate(selectedDate)}</h2>
-            <button onClick={goToNextDay} className="rounded-lg p-2 hover:bg-muted">
+            <h2 className="font-heading font-semibold capitalize text-foreground">{selectedPeriodLabel}</h2>
+            <button onClick={goToNextPeriod} className="rounded-lg p-2 hover:bg-muted">
               <ChevronRight className="h-4 w-4" />
             </button>
             <button onClick={goToToday} className="ml-2 text-sm font-medium text-primary hover:underline">
@@ -662,50 +1219,197 @@ export default function PsychologistAgenda() {
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
-          {view !== "day" ? (
-            <div className="px-4 py-8 text-sm text-muted-foreground">A visualizacao atual esta disponivel apenas com a agenda do dia.</div>
-          ) : isLoading ? (
-            <div className="px-4 py-8 text-sm text-muted-foreground">Carregando consultas...</div>
-          ) : (
-            <div className="divide-y divide-border">
-              {hours.map((hour) => {
-                const apt = visibleAppointments.find((appointment) => appointment.time === hour && appointment.date === selectedDateKey);
+        <div className="rounded-2xl border border-border bg-card/95 p-4 shadow-sm">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-foreground">Legenda financeira</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                A agenda destaca rapidamente as consultas pagas, pendentes e sem cobranca gerada.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {agendaFinancialLegend.map((statusKey) => {
+                const presentation = appointmentFinancialStatusPresentation[statusKey];
                 return (
-                  <div key={hour} className="flex min-h-[64px]">
-                    <div className="flex w-20 flex-shrink-0 items-start justify-center border-r border-border bg-muted/30 p-3 text-sm font-medium text-muted-foreground">
-                      {hour}
-                    </div>
-                    <div className="flex-1 p-2">
-                      {apt ? (
-                        <button
-                          onClick={() => {
-                            setIsCreateOpen(false);
-                            setIsEditOpen(false);
-                            setSelectedApt(apt);
-                          }}
-                          className={`w-full rounded-lg border p-3 text-left transition-all hover:shadow-sm ${statusColors[apt.status]}`}
-                        >
-                          <p className="text-sm font-medium">{apt.patientName}</p>
-                          <p className="mt-0.5 text-xs opacity-80">{apt.type} · {apt.duration}min · {apt.room}</p>
-                          <span className="mt-1 inline-block text-xs font-medium">{statusLabels[apt.status]}</span>
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
+                  <span
+                    key={statusKey}
+                    className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground"
+                  >
+                    <span className={`h-2.5 w-2.5 rounded-full ${presentation.dotClassName}`} />
+                    {presentation.label}
+                  </span>
                 );
               })}
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          {isLoading ? (
+            <div className="px-4 py-8 text-sm text-muted-foreground">Carregando consultas...</div>
+          ) : view === "day" ? (
+            !selectedScheduleDay?.enabled ? (
+              <div className="space-y-4 px-4 py-8">
+                <div className="rounded-2xl border border-border bg-muted/40 px-5 py-4 text-center text-sm text-muted-foreground">
+                  Dia sem atendimento configurado
+                </div>
+                {visibleAppointments
+                  .filter((appointment) => appointment.date === selectedDateKey)
+                  .sort((left, right) => left.time.localeCompare(right.time))
+                  .map((appointment) => (
+                    <div key={appointment.id}>
+                      {renderAppointmentCard(appointment)}
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {dayHourRows.map((hour) => {
+                  const hourPrefix = `${hour.slice(0, 2)}:`;
+                  const hourAppointments = visibleAppointments.filter(
+                    (appointment) =>
+                      appointment.date === selectedDateKey &&
+                      appointment.time.startsWith(hourPrefix),
+                  );
+
+                  return (
+                    <div key={hour} className="flex min-h-[96px]">
+                      <div className="flex w-20 flex-shrink-0 items-start justify-center border-r border-border bg-muted/30 p-3 text-sm font-medium text-muted-foreground">
+                        {hour}
+                      </div>
+                      <div className="flex-1 p-2">
+                        {hourAppointments.length > 0 ? (
+                          <div className="space-y-2">
+                            {hourAppointments.map((appointment) => (
+                              <div key={appointment.id}>
+                                {renderAppointmentCard(appointment)}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="flex min-h-full items-center rounded-xl border border-dashed border-border/70 px-4 py-5 text-sm text-muted-foreground">
+                            Horario livre
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : view === "week" ? (
+            <div className="grid gap-4 p-4 lg:grid-cols-2 xl:grid-cols-3">
+              {weekSections.map((section) => (
+                <div key={section.dateKey} className="rounded-2xl border border-border bg-background/70 p-4">
+                  <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
+                    <div>
+                      <p className="text-sm font-semibold capitalize text-foreground">
+                        {section.label}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {section.appointments.length} consulta
+                        {section.appointments.length === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                      {section.dateKey.slice(8, 10)}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {!section.isWorkingDay && section.appointments.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
+                        Folga
+                      </div>
+                    ) : section.appointments.length > 0 ? (
+                      <>
+                        {!section.isWorkingDay ? (
+                          <div className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                            Folga
+                          </div>
+                        ) : null}
+                        {section.appointments.map((appointment) => (
+                          <div key={appointment.id}>
+                            {renderAppointmentCard(appointment, { compact: true })}
+                          </div>
+                        ))}
+                      </>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
+                        Sem consultas neste dia.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-4 p-4">
+              {monthSections.length > 0 ? (
+                monthSections.map((section) => (
+                  <div key={section.dateKey} className="rounded-2xl border border-border bg-background/70 p-4">
+                    <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
+                      <div>
+                        <p className="text-sm font-semibold capitalize text-foreground">
+                          {section.label}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {section.appointments.length} consulta
+                          {section.appointments.length === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                        {section.dateKey.slice(8, 10)}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      {!section.isWorkingDay && section.appointments.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
+                          Folga
+                        </div>
+                      ) : section.appointments.length > 0 ? (
+                        <>
+                          {!section.isWorkingDay ? (
+                            <div className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                              Folga
+                            </div>
+                          ) : null}
+                          {section.appointments.map((appointment) => (
+                            <div key={appointment.id}>
+                              {renderAppointmentCard(appointment, { compact: true })}
+                            </div>
+                          ))}
+                        </>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
+                          Sem consultas neste dia.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="px-4 py-8 text-sm text-muted-foreground">
+                  Nenhuma consulta encontrada no mes selecionado.
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <div className="flex flex-wrap gap-4">
-          {Object.entries(statusLabels).map(([key, label]) => (
-            <div key={key} className="flex items-center gap-2 text-sm text-muted-foreground">
-              <div className={`h-3 w-3 rounded-full ${statusColors[key].split(" ")[0]}`} />
-              {label}
-            </div>
-          ))}
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Status da consulta
+          </p>
+          <div className="mt-3 flex flex-wrap gap-4">
+            {Object.entries(statusLabels).map(([key, label]) => (
+              <div key={key} className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className={`h-3 w-3 rounded-full ${statusColors[key].split(" ")[0]}`} />
+                {label}
+              </div>
+            ))}
+          </div>
         </div>
 
         {requestedAppointments.length > 0 ? (
@@ -713,7 +1417,7 @@ export default function PsychologistAgenda() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-heading text-lg font-semibold text-foreground">Solicitacoes de Horario</h2>
-                <p className="mt-1 text-sm text-muted-foreground">Pedidos recebidos para {formatDisplayDate(selectedDate)}.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Pedidos recebidos para {selectedPeriodLabel}.</p>
               </div>
               <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
                 {requestedAppointments.length} solicitacao{requestedAppointments.length > 1 ? "es" : ""}
@@ -725,18 +1429,14 @@ export default function PsychologistAgenda() {
                 <button
                   key={appointment.id}
                   type="button"
-                  onClick={() => {
-                    setIsCreateOpen(false);
-                    setIsEditOpen(false);
-                    setSelectedApt(appointment);
-                  }}
+                  onClick={() => openAppointmentDetails(appointment)}
                   className="flex w-full items-start justify-between gap-4 rounded-xl border border-primary/15 bg-primary/5 px-4 py-3 text-left transition-all hover:shadow-sm"
                 >
                   <div>
                     <p className="text-sm font-semibold text-foreground">{appointment.patientName}</p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {new Date(`${appointment.date}T00:00:00`).toLocaleDateString("pt-BR")} as {appointment.time}
-                      {appointment.modality ? ` · ${getConsultationModalityLabel(appointment.modality)}` : ""}
+                      {appointment.modality ? ` - ${getConsultationModalityLabel(appointment.modality)}` : ""}
                     </p>
                     <p className="mt-2 text-xs text-muted-foreground">
                       {appointment.notes || "Sem observacoes adicionais do paciente."}
@@ -765,8 +1465,7 @@ export default function PsychologistAgenda() {
               className="space-y-4"
               onSubmit={handleCreateAppointment}
               {...getProfessionalPreviewActionProps({
-                description:
-                  "A criacao de agendamentos reais esta bloqueada no modo preview. Escolha um plano para liberar sua agenda profissional.",
+                description: PREVIEW_FEATURE_LOCK_MESSAGE,
               })}
             >
               <div>
@@ -799,14 +1498,28 @@ export default function PsychologistAgenda() {
                   <select
                     value={appointmentForm.hora}
                     onChange={(e) => setAppointmentForm((current) => ({ ...current, hora: e.target.value }))}
+                    disabled={!getScheduleDayByDate(agendaSchedule, appointmentForm.data)?.enabled || appointmentTimeOptions.length === 0}
                     className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
                   >
-                    {hours.map((hour) => (
+                    <option value="">
+                      {!getScheduleDayByDate(agendaSchedule, appointmentForm.data)?.enabled
+                        ? "Dia sem atendimento configurado"
+                        : appointmentTimeOptions.length === 0
+                          ? "Sem horarios disponiveis"
+                          : "Selecione um horario"}
+                    </option>
+                    {appointmentTimeOptions.map((hour) => (
                       <option key={hour} value={hour}>{hour}</option>
                     ))}
                   </select>
                 </div>
               </div>
+
+              {!getScheduleDayByDate(agendaSchedule, appointmentForm.data)?.enabled ? (
+                <div className="rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                  Dia sem atendimento configurado.
+                </div>
+              ) : null}
 
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-foreground">Status</label>
@@ -833,7 +1546,7 @@ export default function PsychologistAgenda() {
               </div>
 
               <div className="mt-6 flex gap-3">
-                <button type="submit" disabled={isSubmitting} className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-70">
+                <button type="submit" disabled={isSubmitting || !appointmentForm.hora} className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-70">
                   {isSubmitting ? "Salvando..." : "Salvar"}
                 </button>
                 <button type="button" onClick={() => setIsCreateOpen(false)} className="flex-1 rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted">
@@ -858,8 +1571,7 @@ export default function PsychologistAgenda() {
               className="space-y-4"
               onSubmit={handleEditAppointment}
               {...getProfessionalPreviewActionProps({
-                description:
-                  "A atualizacao de consultas reais fica disponivel assim que sua area profissional for liberada.",
+                description: PREVIEW_FEATURE_LOCK_MESSAGE,
               })}
             >
               <div>
@@ -887,14 +1599,28 @@ export default function PsychologistAgenda() {
                   <select
                     value={appointmentForm.hora}
                     onChange={(e) => setAppointmentForm((current) => ({ ...current, hora: e.target.value }))}
+                    disabled={!getScheduleDayByDate(agendaSchedule, appointmentForm.data)?.enabled || appointmentTimeOptions.length === 0}
                     className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
                   >
-                    {hours.map((hour) => (
+                    <option value="">
+                      {!getScheduleDayByDate(agendaSchedule, appointmentForm.data)?.enabled
+                        ? "Dia sem atendimento configurado"
+                        : appointmentTimeOptions.length === 0
+                          ? "Sem horarios disponiveis"
+                          : "Selecione um horario"}
+                    </option>
+                    {appointmentTimeOptions.map((hour) => (
                       <option key={hour} value={hour}>{hour}</option>
                     ))}
                   </select>
                 </div>
               </div>
+
+              {!getScheduleDayByDate(agendaSchedule, appointmentForm.data)?.enabled ? (
+                <div className="rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                  Dia sem atendimento configurado.
+                </div>
+              ) : null}
 
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-foreground">Status</label>
@@ -921,7 +1647,7 @@ export default function PsychologistAgenda() {
               </div>
 
               <div className="mt-6 flex gap-3">
-                <button type="submit" disabled={isSubmitting} className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-70">
+                <button type="submit" disabled={isSubmitting || !appointmentForm.hora} className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-70">
                   {isSubmitting ? "Salvando..." : "Salvar"}
                 </button>
                 <button type="button" onClick={() => { setIsEditOpen(false); setEditingApt(null); }} className="flex-1 rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted">
@@ -952,6 +1678,7 @@ export default function PsychologistAgenda() {
                   ? [["Horario solicitado", formatDateTimeLabel(selectedApt.requestedDateTimeOriginal)]]
                   : []),
                 ["Modalidade", selectedApt.modality ? getConsultationModalityLabel(selectedApt.modality) : "A definir"],
+                ["Valor", formatCurrency(selectedApt.consultationValue)],
                 ["Tipo", selectedApt.type],
                 ["Sala", selectedApt.room],
                 ["Notas", selectedApt.notes || "Sem notas"],
@@ -962,12 +1689,46 @@ export default function PsychologistAgenda() {
                 </div>
               ))}
               <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">Status</span>
+                <span className="text-sm text-muted-foreground">Status da consulta</span>
                 <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusColors[selectedApt.status]}`}>
                   {statusLabels[selectedApt.status]}
                 </span>
               </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-sm text-muted-foreground">Status financeiro</span>
+                <span
+                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${appointmentFinancialStatusPresentation[selectedApt.paymentStatus].badgeClassName}`}
+                >
+                  {appointmentFinancialStatusPresentation[selectedApt.paymentStatus].label}
+                </span>
+              </div>
             </div>
+
+            {selectedApt.paymentStatus === "aguardando_pagamento" &&
+            getAppointmentPaymentLink(selectedApt) ? (
+              <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+                <p className="text-sm font-semibold text-foreground">Cobranca pendente</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Compartilhe ou abra o link para acompanhar o pagamento desta consulta.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void copyPaymentLink(getAppointmentPaymentLink(selectedApt))}
+                    className="rounded-xl border border-border bg-card px-3 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+                  >
+                    Copiar link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openPaymentLink(getAppointmentPaymentLink(selectedApt))}
+                    className="rounded-xl py-2 text-sm font-semibold text-primary hover:underline"
+                  >
+                    Abrir cobranca
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {selectedApt.status === "requested" ? (
               <>
@@ -992,23 +1753,39 @@ export default function PsychologistAgenda() {
                       </div>
                       <div>
                         <label className="mb-1.5 block text-sm font-medium text-foreground">Novo horario</label>
-                        <input
-                          type="time"
+                        <select
                           value={counterProposalForm.hora}
                           onChange={(e) => setCounterProposalForm((current) => ({ ...current, hora: e.target.value }))}
+                          disabled={!getScheduleDayByDate(agendaSchedule, counterProposalForm.data)?.enabled || counterProposalTimeOptions.length === 0}
                           className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
-                        />
+                        >
+                          <option value="">
+                            {!getScheduleDayByDate(agendaSchedule, counterProposalForm.data)?.enabled
+                              ? "Dia sem atendimento configurado"
+                              : counterProposalTimeOptions.length === 0
+                                ? "Sem horarios disponiveis"
+                                : "Selecione um horario"}
+                          </option>
+                          {counterProposalTimeOptions.map((hour) => (
+                            <option key={hour} value={hour}>{hour}</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
+
+                    {!getScheduleDayByDate(agendaSchedule, counterProposalForm.data)?.enabled ? (
+                      <div className="rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                        Dia sem atendimento configurado.
+                      </div>
+                    ) : null}
 
                     <div className="flex gap-3">
                       <button
                         type="button"
                         onClick={handleSuggestOtherTime}
-                        disabled={isSuggestingOtherTime}
+                        disabled={isSuggestingOtherTime || !counterProposalForm.hora}
                         {...getProfessionalPreviewActionProps({
-                          description:
-                            "A contraproposta de horarios reais fica disponivel assim que sua area profissional for liberada.",
+                          description: PREVIEW_FEATURE_LOCK_MESSAGE,
                         })}
                         className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-70"
                       >
@@ -1030,8 +1807,7 @@ export default function PsychologistAgenda() {
                     onClick={handleConfirmAppointment}
                     disabled={isConfirming}
                     {...getProfessionalPreviewActionProps({
-                      description:
-                        "A confirmacao de solicitacoes reais fica disponivel assim que sua area profissional for liberada.",
+                      description: PREVIEW_FEATURE_LOCK_MESSAGE,
                     })}
                     className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-70"
                   >
@@ -1050,8 +1826,7 @@ export default function PsychologistAgenda() {
                   onClick={handleRefuseRequest}
                   disabled={isRefusingRequest}
                   {...getProfessionalPreviewActionProps({
-                    description:
-                      "No modo preview, a agenda fica disponivel para exploracao visual. Para recusar solicitacoes reais, libere o acesso completo.",
+                    description: PREVIEW_FEATURE_LOCK_MESSAGE,
                   })}
                   className="mt-3 w-full rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-70"
                 >
@@ -1077,8 +1852,7 @@ export default function PsychologistAgenda() {
                   <button
                     onClick={openEditModal}
                     {...getProfessionalPreviewActionProps({
-                      description:
-                        "A edicao de agendamentos fica disponivel depois da liberacao do plano. Enquanto isso, voce pode explorar a agenda em modo preview.",
+                      description: PREVIEW_FEATURE_LOCK_MESSAGE,
                     })}
                     className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground"
                   >
@@ -1092,8 +1866,7 @@ export default function PsychologistAgenda() {
                   onClick={handleCancelAppointment}
                   disabled={isCancelling}
                   {...getProfessionalPreviewActionProps({
-                    description:
-                      "No modo preview, a agenda fica disponivel para exploracao visual. Para cancelar consultas reais, libere o acesso completo.",
+                    description: PREVIEW_FEATURE_LOCK_MESSAGE,
                   })}
                   className="mt-3 w-full rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-70"
                 >
@@ -1101,6 +1874,105 @@ export default function PsychologistAgenda() {
                 </button>
               </>
             )}
+          </div>
+        </div>
+      ) : null}
+
+      {paymentFeedback ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/20 p-4 backdrop-blur-sm"
+          onClick={() => setPaymentFeedback(null)}
+        >
+          <div
+            className="w-full max-w-md animate-scale-in rounded-2xl border border-border bg-card p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-heading text-lg font-semibold text-foreground">
+                {getConsultationPaymentTitle(paymentFeedback.payment)}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setPaymentFeedback(null)}
+                className="rounded-lg p-1 hover:bg-muted"
+              >
+                <X className="h-5 w-5 text-muted-foreground" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-xl bg-muted/40 px-4 py-3">
+                <p className="text-sm font-medium text-foreground">
+                  Paciente: {paymentFeedback.patientName}
+                </p>
+                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                  {getConsultationPaymentDescription(paymentFeedback.payment)}
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-start justify-between gap-4">
+                  <span className="text-sm text-muted-foreground">Modo de pagamento</span>
+                  <span className="text-right text-sm font-medium text-foreground">
+                    {paymentFeedback.payment.paymentMode === "asaas_split"
+                      ? "Psivinculo com Asaas Split"
+                      : "Pagamento externo"}
+                  </span>
+                </div>
+                <div className="flex items-start justify-between gap-4">
+                  <span className="text-sm text-muted-foreground">Status do pagamento</span>
+                  <span className="text-right text-sm font-medium text-foreground">
+                    {paymentStatusLabels[paymentFeedback.payment.paymentStatus || ""] ||
+                      paymentFeedback.payment.paymentStatus ||
+                      "Nao informado"}
+                  </span>
+                </div>
+                {paymentFeedback.payment.asaasPaymentId ? (
+                  <div className="flex items-start justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Cobranca Asaas</span>
+                    <span className="text-right text-sm font-medium text-foreground">
+                      {paymentFeedback.payment.asaasPaymentId}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+
+              {getConsultationPaymentLink(paymentFeedback.payment) ? (
+                <div className="rounded-xl border border-border bg-background px-4 py-3">
+                  <p className="mb-2 text-sm font-medium text-foreground">Link de pagamento</p>
+                  <p className="break-all text-sm text-muted-foreground">
+                    {getConsultationPaymentLink(paymentFeedback.payment)}
+                  </p>
+                </div>
+              ) : null}
+
+              {getConsultationPaymentLink(paymentFeedback.payment) ? (
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => openPaymentLink(getConsultationPaymentLink(paymentFeedback.payment))}
+                    className="flex-1 rounded-xl py-2.5 text-sm font-semibold gradient-primary text-primary-foreground"
+                  >
+                    Abrir link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void copyPaymentLink(getConsultationPaymentLink(paymentFeedback.payment))}
+                    className="flex-1 rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted"
+                  >
+                    Copiar link
+                  </button>
+                </div>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => setPaymentFeedback(null)}
+                className="w-full rounded-xl border border-border py-2.5 text-sm font-semibold text-foreground hover:bg-muted"
+              >
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

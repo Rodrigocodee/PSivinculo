@@ -1,6 +1,7 @@
 import type { Session, User } from "@supabase/supabase-js";
 import { resolveSubscriptionAccessFromSource } from "@/lib/subscriptionAccess";
 import { getSupabaseRememberPreference, setSupabaseRememberPreference, supabase } from "@/lib/supabase";
+import { getFriendlyAuthSignUpErrorMessage } from "@/services/authErrorMessages";
 import {
   CLINIC_ADMIN_USER_TYPE,
   getClinicAdminClinicId,
@@ -15,6 +16,10 @@ import {
   resolvePsychologistClinicAccess,
 } from "@/services/psychologistAccess";
 import { findPsychologistByInviteCode } from "@/services/psychologistInvite";
+import {
+  fetchPsychologistSubscription,
+  type PsychologistSubscriptionPlan,
+} from "@/services/psychologistSubscription";
 import { linkPendingSubscriptionAfterRegistration } from "@/services/subscriptionPersistence";
 
 const AUTH_RECORD_TABLES = ["usuarios", "pacientes"] as const;
@@ -420,6 +425,125 @@ function resolveProfessionalAccess(
   return false;
 }
 
+function buildUsuariosSubscriptionSnapshotPayload(
+  row: Record<string, unknown>,
+  plan: PsychologistSubscriptionPlan,
+) {
+  const payload: Record<string, unknown> = {};
+  const isActive = plan.subscriptionActive === true;
+
+  if ("asaas_customer_id" in row) payload.asaas_customer_id = plan.customerId;
+  if ("asaas_subscription_id" in row) payload.asaas_subscription_id = plan.subscriptionId;
+  if ("plano_slug" in row) payload.plano_slug = plan.slug;
+  if ("status_assinatura" in row) payload.status_assinatura = plan.status;
+  if ("valor_mensal" in row) payload.valor_mensal = plan.monthlyPrice;
+  if ("proximo_vencimento" in row) payload.proximo_vencimento = plan.nextDueDate;
+  if ("forma_pagamento" in row) payload.forma_pagamento = plan.paymentMethod;
+  if ("assinatura_ativa" in row) payload.assinatura_ativa = isActive;
+  if ("subscription_active" in row) payload.subscription_active = isActive;
+  if ("plan_active" in row) payload.plan_active = isActive;
+  if ("professional_access_granted" in row) payload.professional_access_granted = isActive;
+  if ("professional_access_status" in row) {
+    payload.professional_access_status = isActive ? "active" : "preview";
+  }
+
+  return Object.fromEntries(
+    Object.entries(payload).filter(([key, value]) => row[key] !== value),
+  );
+}
+
+async function syncAuthenticatedUsuariosSubscriptionSnapshot(
+  record: LookupRecord | null,
+  plan: PsychologistSubscriptionPlan | null,
+) {
+  if (!record || record.table !== "usuarios" || !record.row || !plan) return record;
+
+  const payload = buildUsuariosSubscriptionSnapshotPayload(record.row, plan);
+  if (Object.keys(payload).length === 0) return record;
+
+  const matchColumn = pickString(record.row, ["auth_id"]) ? "auth_id" : "id";
+  const matchValue = pickString(record.row, [matchColumn]);
+  if (!matchValue) return record;
+
+  try {
+    const { data, error } = await supabase
+      .from("usuarios")
+      .update(payload)
+      .eq(matchColumn, matchValue)
+      .select("*")
+      .maybeSingle();
+
+    if (error || !data || !isRecord(data)) return record;
+
+    return {
+      table: "usuarios",
+      row: data,
+    } satisfies LookupRecord;
+  } catch (error) {
+    console.warn(`${AUTH_RECONCILIATION_DEBUG_PREFIX}[subscription_snapshot_sync_failed]`, {
+      matchColumn,
+      error: error instanceof Error ? error.message : "Unknown subscription snapshot sync error",
+    });
+    return record;
+  }
+}
+
+async function resolveAuthenticatedUserSubscriptionAccess(
+  role: AppRole,
+  record: LookupRecord | null,
+  isClinicInvitedPsychologist: boolean,
+) {
+  if (role !== "psychologist" || isClinicInvitedPsychologist) {
+    return {
+      hasSubscriptionState: false,
+      hasProfessionalAccess: role !== "psychologist" || isClinicInvitedPsychologist,
+      record,
+    };
+  }
+
+  try {
+    const subscription = await fetchPsychologistSubscription();
+    const conflictActiveCount = subscription.conflict?.activeCount || 0;
+
+    if (conflictActiveCount > 0) {
+      return {
+        hasSubscriptionState: true,
+        hasProfessionalAccess: false,
+        record,
+      };
+    }
+
+    if (!subscription.hasSubscription || !subscription.currentPlan) {
+      return {
+        hasSubscriptionState: true,
+        hasProfessionalAccess: false,
+        record,
+      };
+    }
+
+    const syncedRecord = await syncAuthenticatedUsuariosSubscriptionSnapshot(
+      record,
+      subscription.currentPlan,
+    );
+
+    return {
+      hasSubscriptionState: true,
+      hasProfessionalAccess: subscription.currentPlan.subscriptionActive === true,
+      record: syncedRecord,
+    };
+  } catch (error) {
+    console.warn(`${AUTH_RECONCILIATION_DEBUG_PREFIX}[subscription_access_resolution_failed]`, {
+      error: error instanceof Error ? error.message : "Unknown subscription access resolution error",
+    });
+
+    return {
+      hasSubscriptionState: false,
+      hasProfessionalAccess: false,
+      record,
+    };
+  }
+}
+
 export function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
 }
@@ -499,13 +623,21 @@ export async function resolveAuthenticatedAppUser(user: User): Promise<Authentic
       ? resolvePsychologistClinicAccess(null, record?.row || null)
       : null;
   const isClinicInvitedPsychologist = Boolean(psychologistClinicAccess?.isClinicInvitedPsychologist);
-  const hasProfessionalAccess = resolveProfessionalAccess(
+  const subscriptionAccess = await resolveAuthenticatedUserSubscriptionAccess(
     role,
-    metadata,
-    record?.row || null,
-    needsProfileSetup,
+    record,
     isClinicInvitedPsychologist,
   );
+  record = subscriptionAccess.record;
+  const hasProfessionalAccess = subscriptionAccess.hasSubscriptionState
+    ? subscriptionAccess.hasProfessionalAccess
+    : resolveProfessionalAccess(
+        role,
+        metadata,
+        record?.row || null,
+        needsProfileSetup,
+        isClinicInvitedPsychologist,
+      );
 
   const authResolutionPayload = {
     authUserId: user.id,
@@ -633,6 +765,15 @@ async function mapSignInErrorMessage(error: Error, email: string) {
 }
 
 function mapSignUpErrorMessage(error: Error) {
+  const friendlyMessage = getFriendlyAuthSignUpErrorMessage(error);
+  if (friendlyMessage) {
+    if (friendlyMessage === "Este e-mail ja esta em uso.") {
+      return AUTH_EXISTING_ACCOUNT_RECOVERY_MESSAGE;
+    }
+
+    return friendlyMessage;
+  }
+
   const rawMessage = error.message.toLowerCase();
 
   if (rawMessage.includes("user already registered")) {
@@ -1151,7 +1292,9 @@ async function createOrRecoverPsychologistAuth(input: {
   });
 
   const { data, error } = signUpResult;
+  const signUpErrorCode = readSupabaseErrorField(error, "code").toLowerCase();
   const authAlreadyExists =
+    signUpErrorCode === "user_already_exists" ||
     (error && error.message.toLowerCase().includes("user already registered")) ||
     (!error && isMaskedExistingAuthUser(data.user));
 
@@ -1281,7 +1424,6 @@ export async function signUpPsychologist(input: SignUpInput) {
   const normalizedEmail = normalizeEmail(input.email);
   const normalizedFullName = input.fullName.trim();
   const clinicInviteCode = input.clinicInviteCode?.trim() || "";
-  await assertEmailAvailable(normalizedEmail);
   const clinic = clinicInviteCode ? await validateClinicInviteCode(clinicInviteCode) : null;
   const isClinicInvitedPsychologist = Boolean(clinic);
 
@@ -1363,6 +1505,16 @@ export async function signUpPsychologist(input: SignUpInput) {
       error: toSupabaseErrorMessage(error),
     });
     throw error instanceof Error ? error : new Error("Nao foi possivel criar sua conta agora. Tente novamente.");
+  }
+
+  if (authResult.requiresEmailConfirmation || !authResult.session) {
+    return {
+      session: authResult.session,
+      user: authResult.user,
+      appUser: null,
+      clinic,
+      requiresEmailConfirmation: true,
+    };
   }
 
   if (clinic) {

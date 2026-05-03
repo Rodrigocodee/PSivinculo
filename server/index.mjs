@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,9 +8,14 @@ import {
   changeSubscriptionPlanOnAsaas,
   createSubscriptionOnAsaas,
   createSubscriptionPaymentLink,
+  getCurrentSubscriptionPlanOnAsaas,
   handleAsaasWebhook,
 } from "./asaas.mjs";
+import { executeAdminMasterAction, getAdminMasterOverview } from "./admin-master.mjs";
 import { linkPendingAsaasSubscriptions } from "./billing-store.mjs";
+import { handleConsultationAsaasWebhook } from "./consultation-payment-webhook.mjs";
+import { createConsultationPayment } from "./consultation-payments.mjs";
+import { processConsultationReminders } from "./consultation-reminders.mjs";
 import {
   respondConsultaCounterproposalAndNotify,
   respondConsultaRequestAndNotify,
@@ -63,6 +69,36 @@ function buildUrl(request) {
   return new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 }
 
+function areSecretsEqual(left, right) {
+  const normalizedLeft = normalizeString(left);
+  const normalizedRight = normalizeString(right);
+
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+
+  const leftBuffer = Buffer.from(normalizedLeft);
+  const rightBuffer = Buffer.from(normalizedRight);
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function extractInternalSecret(headers) {
+  const authorizationHeader =
+    getHeaderValue(headers, "authorization") || getHeaderValue(headers, "Authorization");
+  const authorizationMatch = authorizationHeader.match(/^Bearer\s+(.+)$/i);
+
+  return (
+    normalizeString(authorizationMatch?.[1]) ||
+    getHeaderValue(headers, "x-cron-secret") ||
+    getHeaderValue(headers, "X-Cron-Secret")
+  );
+}
+
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
@@ -98,6 +134,18 @@ function buildErrorPayload(error) {
   };
 }
 
+function resolveLoggableErrorDetails(error) {
+  if (error instanceof HttpError) {
+    return error.details ?? null;
+  }
+
+  if (error instanceof Error && error.stack) {
+    return { stack: error.stack };
+  }
+
+  return null;
+}
+
 function logRequestError(scope, pathname, request, error) {
   const statusCode = error instanceof HttpError ? error.status : 500;
   console.error(`[Psivinculo][server][${scope}]`, {
@@ -106,6 +154,7 @@ function logRequestError(scope, pathname, request, error) {
     statusCode,
     code: error instanceof HttpError ? error.code : "INTERNAL_SERVER_ERROR",
     message: error instanceof Error ? error.message : "Unknown server error",
+    details: resolveLoggableErrorDetails(error),
   });
 
   return statusCode;
@@ -301,6 +350,25 @@ async function handleSubscriptionPaymentLinkApiRequest(request, response, pathna
   return true;
 }
 
+async function handleCurrentPlanApiRequest(request, response, pathname) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await getCurrentSubscriptionPlanOnAsaas(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "current_plan_failed");
+  }
+
+  return true;
+}
+
 async function handleCancelPlanApiRequest(request, response, pathname) {
   try {
     const payload = await readJsonBody(request);
@@ -357,6 +425,7 @@ async function handleConsultaRespondRequestApiRequest(request, response, pathnam
       success: true,
       consultation: result.consultation,
       email: result.email,
+      payment: result.payment ?? null,
     });
   } catch (error) {
     sendErrorJson(response, pathname, request, error, "consulta_respond_request_failed");
@@ -377,6 +446,7 @@ async function handleConsultaUpdateApiRequest(request, response, pathname) {
       success: true,
       consultation: result.consultation,
       email: result.email,
+      payment: result.payment ?? null,
     });
   } catch (error) {
     sendErrorJson(response, pathname, request, error, "consulta_update_failed");
@@ -397,6 +467,7 @@ async function handleConsultaRespondCounterproposalApiRequest(request, response,
       success: true,
       consultation: result.consultation,
       email: result.email,
+      payment: result.payment ?? null,
     });
   } catch (error) {
     sendErrorJson(response, pathname, request, error, "consulta_respond_counterproposal_failed");
@@ -405,7 +476,138 @@ async function handleConsultaRespondCounterproposalApiRequest(request, response,
   return true;
 }
 
+async function handleConsultaCreatePaymentApiRequest(request, response, pathname) {
+  try {
+    const payload = await readJsonBody(request);
+    const payment = await createConsultationPayment(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      payment,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "consulta_create_payment_failed");
+  }
+
+  return true;
+}
+
+async function handleConsultaProcessRemindersApiRequest(request, response, pathname) {
+  try {
+    const configuredSecret = normalizeString(process.env.CRON_SECRET);
+
+    if (!configuredSecret) {
+      throw new HttpError(500, "CRON_SECRET nao foi configurado no servidor.", {
+        code: "CRON_SECRET_MISSING",
+      });
+    }
+
+    const receivedSecret = extractInternalSecret(request.headers);
+
+    if (!areSecretsEqual(configuredSecret, receivedSecret)) {
+      throw new HttpError(403, "A rota interna de lembretes exige um token valido.", {
+        code: "CRON_SECRET_INVALID",
+      });
+    }
+
+    const payload = await readJsonBody(request);
+    const result = await processConsultationReminders(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      result,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "consulta_process_reminders_failed");
+  }
+
+  return true;
+}
+
+async function handleConsultaAsaasWebhookApiRequest(request, response, pathname) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await handleConsultationAsaasWebhook(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "consulta_asaas_webhook_failed");
+  }
+
+  return true;
+}
+
+async function handleAdminMasterOverviewApiRequest(request, response, pathname) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await getAdminMasterOverview(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "admin_master_overview_failed");
+  }
+
+  return true;
+}
+
+async function handleAdminMasterActionApiRequest(request, response, pathname) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await executeAdminMasterAction(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "admin_master_action_failed");
+  }
+
+  return true;
+}
+
 async function handleApiRequest(request, response, pathname) {
+  if (pathname === "/api/admin-master/action") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para executar a acao Admin Master.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handleAdminMasterActionApiRequest(request, response, pathname);
+  }
+
+  if (pathname === "/api/admin-master/overview") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para consultar o Admin Master.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handleAdminMasterOverviewApiRequest(request, response, pathname);
+  }
+
   if (pathname === "/api/email/test") {
     if (request.method !== "POST") {
       throw new HttpError(405, "Use POST para enviar o e-mail de teste.", {
@@ -446,6 +648,36 @@ async function handleApiRequest(request, response, pathname) {
     return handleConsultaRespondCounterproposalApiRequest(request, response, pathname);
   }
 
+  if (pathname === "/api/consultas/create-payment") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para gerar a cobranca da consulta.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handleConsultaCreatePaymentApiRequest(request, response, pathname);
+  }
+
+  if (pathname === "/api/consultas/process-reminders") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para processar os lembretes de consulta.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handleConsultaProcessRemindersApiRequest(request, response, pathname);
+  }
+
+  if (pathname === "/api/webhooks/asaas/consultas") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para receber o webhook de consultas do Asaas.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handleConsultaAsaasWebhookApiRequest(request, response, pathname);
+  }
+
   if (pathname === "/api/asaas/create-subscription") {
     if (request.method !== "POST") {
       throw new HttpError(405, "Use POST para criar a assinatura no Asaas.", {
@@ -474,6 +706,16 @@ async function handleApiRequest(request, response, pathname) {
     }
 
     return handleSubscriptionPaymentLinkApiRequest(request, response, pathname);
+  }
+
+  if (pathname === "/api/asaas/current-plan") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para consultar a assinatura atual.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handleCurrentPlanApiRequest(request, response, pathname);
   }
 
   if (pathname === "/api/asaas/cancel-plan") {

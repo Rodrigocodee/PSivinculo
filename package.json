@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "start": "node server/index.mjs",
     "start:local": "node --env-file=.env server/index.mjs",
+    "reminders:local": "node --env-file=.env server/jobs/consultation-reminders-local.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

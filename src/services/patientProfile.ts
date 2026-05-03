@@ -14,6 +14,9 @@ type LookupCandidate = {
   value: string;
 };
 
+const PATIENT_PROFILE_SAFE_SELECT =
+  "id, clinica_id, psicologo_id, nome, email, data_nascimento, cpf, telefone, endereco";
+
 export type PatientProfileData = {
   patient: CurrentPacienteContext;
   row: PacienteProfileRow | null;
@@ -82,7 +85,7 @@ function formatDateInputValue(value: string) {
 async function fetchPatientProfileRow(patientId: string) {
   const { data, error } = await supabase
     .from("pacientes")
-    .select("*")
+    .select(PATIENT_PROFILE_SAFE_SELECT)
     .eq("id", patientId)
     .maybeSingle();
 
@@ -245,7 +248,7 @@ export async function fetchCurrentPatientProfile(): Promise<PatientProfileData> 
     return mapPatientProfileData(patient, null);
   }
 
-  const row = await fetchPatientProfileRow(patient.patientId);
+  const row = (await fetchPatientProfileRow(patient.patientId)) ?? patient.record;
   return mapPatientProfileData(patient, row);
 }
 
@@ -284,7 +287,7 @@ export async function saveCurrentPatientProfile(
     .from("pacientes")
     .update(payload)
     .eq("id", profile.patientId)
-    .select("*")
+    .select(PATIENT_PROFILE_SAFE_SELECT)
     .maybeSingle();
 
   if (error) throw error;

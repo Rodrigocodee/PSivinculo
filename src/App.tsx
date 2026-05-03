@@ -7,8 +7,11 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { PermissionsProvider } from "@/contexts/PermissionsContext";
 import { RedirectAuthenticated, RequireAuth } from "@/components/auth/AuthRouteGuard";
+import { RequirePsychologistReceivablesEnabled } from "@/components/auth/RequirePsychologistReceivablesEnabled";
 
 const LandingPage = lazy(() => import("./pages/LandingPage"));
+const PublicDemoPage = lazy(() => import("./pages/PublicDemoPage"));
+const PlatformPsychologistsPreviewPage = lazy(() => import("./pages/PlatformPsychologistsPreviewPage"));
 const AboutPage = lazy(() => import("./pages/AboutPage"));
 const ContactPage = lazy(() => import("./pages/ContactPage"));
 const TermsOfUsePage = lazy(() => import("./pages/TermsOfUsePage"));
@@ -32,9 +35,13 @@ const PsiPatientRegister = lazy(() => import("./pages/psychologist/PatientRegist
 const PsiPatientDetails = lazy(() => import("./pages/psychologist/PatientDetails"));
 const PsiPatientRecords = lazy(() => import("./pages/psychologist/PatientRecords"));
 const PsiFinancial = lazy(() => import("./pages/psychologist/Financial"));
+const PsiFinancialSettings = lazy(() => import("./pages/psychologist/FinancialSettings"));
+const PsiReceivables = lazy(() => import("./pages/psychologist/Receivables"));
 const PsiReports = lazy(() => import("./pages/psychologist/Reports"));
 const PsiSettings = lazy(() => import("./pages/psychologist/Settings"));
 const PsiConsultationSettings = lazy(() => import("./pages/psychologist/ConsultationSettings"));
+const PsiPlans = lazy(() => import("./pages/psychologist/Plans"));
+const PsiPaymentReturn = lazy(() => import("./pages/psychologist/PaymentReturn"));
 
 const AdminDashboard = lazy(() => import("./pages/admin/Dashboard"));
 const AdminUsers = lazy(() => import("./pages/admin/Users"));
@@ -46,6 +53,7 @@ const AdminFinancial = lazy(() => import("./pages/admin/Financial"));
 const AdminPlans = lazy(() => import("./pages/admin/Plans"));
 const AdminSubscription = lazy(() => import("./pages/admin/Subscription"));
 const AdminSettings = lazy(() => import("./pages/admin/Settings"));
+const AdminMaster = lazy(() => import("./pages/admin/Master"));
 
 const PatientDashboard = lazy(() => import("./pages/patient/Dashboard"));
 const PatientAppointments = lazy(() => import("./pages/patient/Appointments"));
@@ -84,6 +92,8 @@ const App = () => (
             <Suspense fallback={<AppRouteFallback />}>
               <Routes>
                 <Route path="/" element={<LandingPage />} />
+                <Route path="/demo" element={<PublicDemoPage />} />
+                <Route path="/psicologos-da-plataforma" element={<PlatformPsychologistsPreviewPage />} />
                 <Route path="/sobre" element={<AboutPage />} />
                 <Route path="/contato" element={<ContactPage />} />
                 <Route path="/termos-de-uso" element={<TermsOfUsePage />} />
@@ -105,6 +115,9 @@ const App = () => (
                 <Route element={<RequireAuth allowedRoles={["psychologist"]} />}>
                   <Route path="/cadastro/perfil-profissional" element={<PsiProfileSetup />} />
                   <Route path="/dashboard" element={<Navigate to="/psi/dashboard" replace />} />
+                  <Route path="/configuracoes" element={<Navigate to="/psi/configuracoes" replace />} />
+                  <Route path="/configuracoes/financeiro" element={<Navigate to="/psi/configuracoes/financeiro" replace />} />
+                  <Route path="/recebimentos" element={<Navigate to="/psi/recebimentos" replace />} />
                   <Route
                     path="/psi/dashboard"
                     element={<RequireAuth moduleKey="dashboard"><PsiDashboard /></RequireAuth>}
@@ -138,6 +151,16 @@ const App = () => (
                     element={<RequireAuth moduleKey="financial"><PsiFinancial /></RequireAuth>}
                   />
                   <Route
+                    path="/psi/recebimentos"
+                    element={
+                      <RequireAuth moduleKey="financial">
+                        <RequirePsychologistReceivablesEnabled>
+                          <PsiReceivables />
+                        </RequirePsychologistReceivablesEnabled>
+                      </RequireAuth>
+                    }
+                  />
+                  <Route
                     path="/psi/relatorios"
                     element={<RequireAuth moduleKey="reports"><PsiReports /></RequireAuth>}
                   />
@@ -146,10 +169,24 @@ const App = () => (
                     element={<RequireAuth moduleKey="settings"><PsiSettings /></RequireAuth>}
                   />
                   <Route
+                    path="/psi/configuracoes/financeiro"
+                    element={<RequireAuth moduleKey="settings"><PsiFinancialSettings /></RequireAuth>}
+                  />
+                  <Route
                     path="/psi/consulta-config"
                     element={<RequireAuth moduleKey="settings"><PsiConsultationSettings /></RequireAuth>}
                   />
+                  <Route
+                    path="/psi/planos"
+                    element={<PsiPlans />}
+                  />
+                  <Route
+                    path="/psi/pagamento/retorno"
+                    element={<PsiPaymentReturn />}
+                  />
                 </Route>
+
+                <Route path="/admin/master" element={<AdminMaster />} />
 
                 <Route element={<RequireAuth allowedRoles={["admin"]} />}>
                   <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />

@@ -84,11 +84,11 @@ function createQueryBuilder(initialData: unknown) {
       return builder;
     },
     maybeSingle() {
-      responseData = null;
+      responseData = Array.isArray(responseData) ? responseData[0] ?? null : responseData;
       return builder;
     },
     single() {
-      responseData = {};
+      responseData = Array.isArray(responseData) ? responseData[0] ?? {} : responseData ?? {};
       return builder;
     },
     insert(payload?: unknown) {
@@ -119,6 +119,49 @@ function createQueryBuilder(initialData: unknown) {
   };
 
   return builder;
+}
+
+function getMockTableData(table: string) {
+  const user = getMockUser();
+  const role = resolveRoleFromPath(window.location.pathname);
+
+  if (table === "usuarios" && user && role) {
+    return [
+      {
+        id: user.id,
+        auth_id: user.id,
+        email: user.email,
+        nome: user.user_metadata.full_name,
+        tipo_usuario: user.user_metadata.tipo_usuario,
+        tipo: user.user_metadata.tipo_usuario,
+        clinica_id: "clinic-1",
+      },
+    ];
+  }
+
+  if (table === "clinicas") {
+    return [
+      {
+        id: "clinic-1",
+        nome: "Clinica Central",
+        codigo_convite: "CLI-123456",
+      },
+    ];
+  }
+
+  if (table === "pacientes" && user) {
+    return [
+      {
+        id: user.id,
+        clinica_id: "clinic-1",
+        psicologo_id: "psi-1",
+        nome: user.user_metadata.full_name,
+        email: user.email,
+      },
+    ];
+  }
+
+  return [];
 }
 
 vi.mock("@/contexts/AuthContext", () => ({
@@ -213,6 +256,48 @@ vi.mock("@/hooks/use-patient-notifications", () => ({
   }),
 }));
 
+vi.mock("@/services/psychologistSubscription", () => ({
+  psychologistSubscriptionQueryKey: ["psychologist-subscription"],
+  fetchPsychologistSubscription: vi.fn(async () => ({
+    success: true,
+    ownerType: "user",
+    hasSubscription: false,
+    currentPlan: null,
+    canCancel: false,
+    conflict: null,
+  })),
+  cancelPsychologistSubscription: vi.fn(),
+}));
+
+vi.mock("@/services/psychologistPlanSelection", () => ({
+  psychologistPlansRoute: "/psi/planos",
+  psychologistPlanSelectionQueryKey: ["psychologist-plan-selection"],
+  listPsychologistIndividualPlans: () => [
+    {
+      routeKey: "essencial",
+      slug: "essencial",
+      name: "Essencial",
+      value: 39.99,
+      priceLabel: "R$ 39,99",
+      description: "Assinatura mensal essencial.",
+      recommended: false,
+      features: ["Agenda profissional"],
+    },
+    {
+      routeKey: "profissional",
+      slug: "profissional",
+      name: "Profissional",
+      value: 59.99,
+      priceLabel: "R$ 59,99",
+      description: "Assinatura mensal profissional.",
+      recommended: true,
+      features: ["Pacientes ilimitados"],
+    },
+  ],
+  createPsychologistPlanSubscription: vi.fn(),
+  createPsychologistSubscriptionPaymentLink: vi.fn(),
+}));
+
 vi.mock("@/services/patientDashboard", () => ({
   fetchPatientDashboardData: vi.fn(async () => ({
     patient: {
@@ -232,7 +317,7 @@ vi.mock("@/services/patientDashboard", () => ({
       isLinked: true,
     },
     nextAppointment: null,
-    pendingPayment: null,
+    pendingPayments: [],
     recentHistory: [],
     hasLinkedPatientRecord: true,
   })),
@@ -285,7 +370,7 @@ vi.mock("@/lib/supabase", () => {
         })),
         resetPasswordForEmail: vi.fn(async () => ({ error: null })),
       },
-      from: vi.fn(() => createQueryBuilder([])),
+      from: vi.fn((table: string) => createQueryBuilder(getMockTableData(table))),
       storage: {
         from: vi.fn(() => ({
           getPublicUrl: vi.fn(() => ({
@@ -309,9 +394,12 @@ async function renderRoute(path: string) {
   window.history.pushState({}, "", path);
   render(<App />);
 
-  await waitFor(() => {
-    expect(screen.queryByText(/^Carregando\.\.\.$/)).not.toBeInTheDocument();
-  });
+  await waitFor(
+    () => {
+      expect(screen.queryByText(/^Carregando\.\.\.$/)).not.toBeInTheDocument();
+    },
+    { timeout: 5_000 },
+  );
 }
 
 describe("App lazy routes", () => {
@@ -319,6 +407,53 @@ describe("App lazy routes", () => {
     await renderRoute("/");
     expect(screen.getByRole("link", { name: /Entrar/i })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: /Funcionalidades/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Criado com propósito, pensado para cuidar" })).toBeInTheDocument();
+    expect(screen.getByText(/nasceu de uma experi/i)).toBeInTheDocument();
+    expect(document.body.textContent).toMatch(/rotina dos psic/i);
+    expect(document.body.textContent).not.toMatch(/rotina de psic/i);
+    expect(screen.queryByText(/Meu nome/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Conhecer a hist/i })).toHaveAttribute("href", "/sobre");
+    expect(screen.getByRole("heading", { name: "Essencial" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Profissional" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Clínica Duo" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Clínica Expansão" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /Escolher plano/i })).toHaveLength(4);
+    expect(screen.getByRole("link", { name: /Ver teaser/i })).toHaveAttribute("href", "/psicologos-da-plataforma");
+  });
+
+  it("renders the full about page story", async () => {
+    await renderRoute("/sobre");
+    expect(screen.getByRole("navigation", { name: /Navegacao institucional/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Voltar ao inicio/i })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("heading", { name: /Criado com prop/i })).toBeInTheDocument();
+    expect(screen.getByText(/Meu nome/i)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Rodrigo Ferreira/i })).toBeInTheDocument();
+    expect(screen.getAllByText(/Rodrigo Ferreira/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Fundador do Psiv/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Formado em An/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("heading", { name: /Prop/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Tecnologia com sensibilidade" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Um projeto em evol/i })).toBeInTheDocument();
+    expect(screen.queryByText(/placeholder/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Uma base institucional simples hoje/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the public demo route without authentication", async () => {
+    await renderRoute("/demo");
+    expect(screen.getByText(/Você está vendo uma demonstração/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Dashboard/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Agenda$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Financeiro/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /Criar conta/i })[0]).toHaveAttribute("href", "/cadastro");
+  });
+
+  it("renders the platform psychologists teaser route without authentication", async () => {
+    await renderRoute("/psicologos-da-plataforma");
+    expect(screen.getByRole("heading", { name: "Psicólogos da plataforma" })).toBeInTheDocument();
+    expect(screen.getAllByText("Em breve").length).toBeGreaterThan(0);
+    expect(screen.getByText(/perfis abaixo são fictícios/i)).toBeInTheDocument();
+    expect(screen.getByText("Ana Luiza Martins")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Ver perfil/i }).length).toBeGreaterThan(0);
   });
 
   it("renders the login route", async () => {
@@ -338,6 +473,22 @@ describe("App lazy routes", () => {
     expect(screen.getByText(/Psicologo Teste/i)).toBeInTheDocument();
   });
 
+  it("renders the dedicated psychologist plans route", async () => {
+    await renderRoute("/psi/planos");
+    expect(await screen.findByRole("heading", { name: /Escolha seu plano/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Essencial" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Profissional" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Clínica Duo" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Clínica Expansão" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Escolher plano/i })).toHaveLength(2);
+  });
+
+  it("renders the psychologist payment return route", async () => {
+    await renderRoute("/psi/pagamento/retorno");
+    expect(await screen.findByText(/Ainda nao identificamos a confirmacao do pagamento/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Verificar novamente/i })).toBeInTheDocument();
+  });
+
   it("renders the patient dashboard route", async () => {
     await renderRoute("/paciente/dashboard");
     expect(screen.getByRole("link", { current: "page", name: /Dashboard/i })).toBeInTheDocument();
@@ -349,6 +500,6 @@ describe("App lazy routes", () => {
     await renderRoute("/admin/dashboard");
     expect(screen.getByRole("link", { current: "page", name: /Dashboard/i })).toBeInTheDocument();
     expect(await screen.findByText(/Dashboard Administrativo/i)).toBeInTheDocument();
-    expect(screen.getByText(/Clinica Central/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Clinica Central/i).length).toBeGreaterThan(0);
   });
 });

@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  clearPsychologistNotifications,
   listPsychologistNotifications,
+  markAllPsychologistNotificationsAsRead,
   markPsychologistNotificationsAsRead,
 } from "@/services/psychologistNotifications";
 
@@ -32,8 +34,24 @@ export function usePsychologistNotifications(enabled = true) {
     );
   }
 
+  async function markAllAsRead() {
+    await markAllPsychologistNotificationsAsRead();
+    queryClient.setQueryData(
+      psychologistNotificationsQueryKey,
+      (currentNotifications: Awaited<ReturnType<typeof listPsychologistNotifications>> | undefined) =>
+        (currentNotifications ?? []).map((notification) => ({ ...notification, read: true })),
+    );
+  }
+
+  async function clearAll() {
+    await clearPsychologistNotifications();
+    queryClient.setQueryData(psychologistNotificationsQueryKey, []);
+  }
+
   return {
     ...query,
+    clearAll,
+    markAllAsRead,
     markAsRead,
   };
 }

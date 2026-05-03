@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  clearPatientNotifications,
   listPatientNotifications,
+  markAllPatientNotificationsAsRead,
   markPatientNotificationsAsRead,
 } from "@/services/patientNotifications";
 
@@ -32,8 +34,24 @@ export function usePatientNotifications(enabled = true) {
     );
   }
 
+  async function markAllAsRead() {
+    await markAllPatientNotificationsAsRead();
+    queryClient.setQueryData(
+      patientNotificationsQueryKey,
+      (currentNotifications: Awaited<ReturnType<typeof listPatientNotifications>> | undefined) =>
+        (currentNotifications ?? []).map((notification) => ({ ...notification, read: true })),
+    );
+  }
+
+  async function clearAll() {
+    await clearPatientNotifications();
+    queryClient.setQueryData(patientNotificationsQueryKey, []);
+  }
+
   return {
     ...query,
+    clearAll,
+    markAllAsRead,
     markAsRead,
   };
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Brain, Building2, Loader2, Phone, ShieldCheck, Sparkles } from "lucide-react";
 import { Navigate, useNavigate } from "react-router-dom";
+import { PsychologistSpecialtySelect } from "@/components/psychologist/PsychologistSpecialtySelect";
 import { toast } from "@/components/ui/sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -146,7 +147,7 @@ export default function PsychologistProfileSetupPage() {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,hsla(var(--primary),0.22),transparent_24%),radial-gradient(circle_at_100%_0%,hsla(var(--accent),0.2),transparent_28%),linear-gradient(180deg,hsl(226_40%_95%),hsl(34_30%_95%)_54%,hsl(var(--background)))] px-6 py-10">
+    <div className="relative min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,hsla(var(--primary),0.22),transparent_24%),radial-gradient(circle_at_100%_0%,hsla(var(--accent),0.2),transparent_28%),linear-gradient(180deg,hsl(226_40%_95%),hsl(34_30%_95%)_54%,hsl(var(--background)))] px-4 py-8 sm:px-6 sm:py-10">
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div className="absolute left-[-8rem] top-[-6rem] h-80 w-80 rounded-full bg-primary/18 blur-3xl" />
         <div className="absolute bottom-[-7rem] right-[-5rem] h-96 w-96 rounded-full bg-accent/16 blur-3xl" />
@@ -212,7 +213,7 @@ export default function PsychologistProfileSetupPage() {
             </div>
           </section>
 
-          <section className="relative overflow-hidden rounded-[2rem] border border-border/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,244,252,0.95))] p-7 shadow-[0_44px_104px_-42px_rgba(67,77,149,0.4)] ring-1 ring-white/80 sm:p-9">
+          <section className="relative overflow-hidden rounded-[1.5rem] border border-border/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,244,252,0.95))] p-5 shadow-[0_44px_104px_-42px_rgba(67,77,149,0.4)] ring-1 ring-white/80 sm:rounded-[2rem] sm:p-9">
             <div
               aria-hidden
               className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,hsla(var(--primary),0.2),transparent_34%),radial-gradient(circle_at_86%_18%,hsla(var(--accent),0.14),transparent_24%),linear-gradient(180deg,rgba(255,255,255,0.28),transparent_42%)]"
@@ -311,12 +312,11 @@ export default function PsychologistProfileSetupPage() {
                       <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                         Especialidade
                       </label>
-                      <input
-                        type="text"
+                      <PsychologistSpecialtySelect
                         value={form.specialty}
-                        onChange={(event) => updateField("specialty", event.target.value)}
-                        placeholder="Ex.: TCC"
-                        className={INPUT_CLASS}
+                        onChange={(value) => updateField("specialty", value)}
+                        selectClassName={INPUT_CLASS}
+                        customInputClassName={INPUT_CLASS}
                         disabled={isSaving}
                       />
                     </div>

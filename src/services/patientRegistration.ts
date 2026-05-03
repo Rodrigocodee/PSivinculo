@@ -1,7 +1,6 @@
 import { setSupabaseRememberPreference, supabase } from "@/lib/supabase";
+import { getFriendlyAuthSignUpErrorMessage } from "@/services/authErrorMessages";
 import {
-  assertEmailAvailable,
-  assertPhoneAvailable,
   isValidEmail,
   normalizeEmail,
   normalizePhoneDigits,
@@ -29,6 +28,9 @@ function logInviteDebug(label: string, payload: Record<string, unknown>) {
 }
 
 function mapPatientSignUpErrorMessage(error: Error) {
+  const friendlyMessage = getFriendlyAuthSignUpErrorMessage(error);
+  if (friendlyMessage) return friendlyMessage;
+
   const rawMessage = error.message.toLowerCase();
 
   if (rawMessage.includes("user already registered")) {
@@ -106,9 +108,6 @@ export async function signUpPatientWithInvite(input: PatientRegistrationInput) {
   if (input.password.length < 6) {
     throw new Error("A senha precisa ter pelo menos 6 caracteres.");
   }
-
-  await assertEmailAvailable(email);
-  await assertPhoneAvailable(phone);
 
   const psychologist = await validatePsychologistInviteCode(inviteCode);
   setSupabaseRememberPreference(true);

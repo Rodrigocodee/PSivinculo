@@ -3,10 +3,16 @@ import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-
 import { getProfessionalPreviewActionProps } from "@/components/psychologist/ProfessionalPreview";
 import { toast } from "@/components/ui/sonner";
 import { formatCpf } from "@/lib/formatters";
-import { supabase } from "@/lib/supabase";
 import { listarConsultasPorPaciente } from "@/services/consultas";
 import { buscarPacientePorId } from "@/services/pacientes";
-import { cadastrarProntuario, listarProntuariosPorPaciente, PRONTUARIOS_BUCKET, type Prontuario, uploadAnexoProntuario } from "@/services/prontuarios";
+import {
+  cadastrarProntuario,
+  createProntuarioAttachmentDownloadUrl,
+  listarProntuariosPorPaciente,
+  type Prontuario,
+  uploadAnexoProntuario,
+} from "@/services/prontuarios";
+import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Paperclip, Lock, Save, FileText } from "lucide-react";
@@ -60,15 +66,7 @@ function getAttachmentLabel(value: string) {
 }
 
 function getAttachmentHref(value: string) {
-  if (/^https?:\/\//i.test(value)) {
-    return value;
-  }
-
-  const { data } = supabase.storage
-    .from(PRONTUARIOS_BUCKET)
-    .getPublicUrl(value);
-
-  return data.publicUrl;
+  return value;
 }
 
 export default function PatientRecords() {
@@ -89,6 +87,7 @@ export default function PatientRecords() {
     fileName: string;
     path: string;
   } | null>(null);
+  const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
   const psychologistName = profile?.fullName?.trim() || "Profissional";
 
   useEffect(() => {
@@ -138,6 +137,46 @@ export default function PatientRecords() {
 
     carregarDados();
   }, [id]);
+
+  useEffect(() => {
+    const attachmentPaths = Array.from(
+      new Set(
+        records
+          .flatMap((record) => record.anexos)
+          .filter((attachmentPath) => typeof attachmentPath === "string" && attachmentPath.trim().length > 0),
+      ),
+    );
+
+    if (attachmentPaths.length === 0) {
+      setAttachmentUrls({});
+      return;
+    }
+
+    let isMounted = true;
+
+    void Promise.all(
+      attachmentPaths.map(async (attachmentPath) => {
+        try {
+          const signedUrl = await createProntuarioAttachmentDownloadUrl(attachmentPath);
+          return [attachmentPath, signedUrl || ""] as const;
+        } catch {
+          return [attachmentPath, ""] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!isMounted) return;
+
+      setAttachmentUrls(
+        Object.fromEntries(
+          entries.filter(([, signedUrl]) => Boolean(signedUrl)),
+        ),
+      );
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [records]);
 
   const patientInitials = useMemo(() => {
     if (!patient?.nome) return "PA";
@@ -415,8 +454,7 @@ export default function PatientRecords() {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   {...getProfessionalPreviewActionProps({
-                    description:
-                      "O envio de anexos clinicos esta bloqueado no modo preview. Libere o acesso para usar o prontuario de forma completa.",
+                    description: PREVIEW_FEATURE_LOCK_MESSAGE,
                   })}
                   disabled={isUploadingFile}
                   className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-70"
@@ -447,8 +485,7 @@ export default function PatientRecords() {
                 onClick={handleSaveRecord}
                 disabled={isSaving || isUploadingFile}
                 {...getProfessionalPreviewActionProps({
-                  description:
-                    "O salvamento de prontuarios e evolucoes clinicas fica disponivel assim que sua area profissional for liberada.",
+                  description: PREVIEW_FEATURE_LOCK_MESSAGE,
                 })}
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl gradient-primary px-5 py-3.5 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
               >
@@ -514,16 +551,26 @@ export default function PatientRecords() {
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {record.anexos.map((attachment, index) => (
-                          <a
-                            key={index}
-                            href={getAttachmentHref(attachment)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs text-primary"
-                          >
-                            <Paperclip className="w-3 h-3" />
-                            {getAttachmentLabel(attachment)}
-                          </a>
+                          attachmentUrls[attachment] ? (
+                            <a
+                              key={index}
+                              href={getAttachmentHref(attachmentUrls[attachment])}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs text-primary"
+                            >
+                              <Paperclip className="w-3 h-3" />
+                              {getAttachmentLabel(attachment)}
+                            </a>
+                          ) : (
+                            <span
+                              key={index}
+                              className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground"
+                            >
+                              <Paperclip className="w-3 h-3" />
+                              {getAttachmentLabel(attachment)}
+                            </span>
+                          )
                         ))}
                       </div>
                     </div>

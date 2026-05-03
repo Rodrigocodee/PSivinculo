@@ -1,75 +1,99 @@
+import { Brain, HeartHandshake, Sparkles } from "lucide-react";
 import { InstitutionalPageLayout } from "@/components/public/InstitutionalPageLayout";
 
-const valueCards = [
+const purposeCards = [
   {
-    title: "Clareza operacional",
-    text: "Placeholder para explicar como o Psivinculo organiza agenda, pacientes, prontuarios e financeiro em uma experiencia mais clara e previsivel.",
+    icon: HeartHandshake,
+    title: "Propósito",
+    text: "Facilitar a rotina dos psicólogos para que o cuidado continue no centro.",
   },
   {
-    title: "Cuidado com a experiencia",
-    text: "Placeholder para descrever o cuidado com interface, fluxo de uso e percepcao de valor para profissionais, clinicas e pacientes.",
+    icon: Brain,
+    title: "Tecnologia com sensibilidade",
+    text: "Automatizar processos sem transformar a experiência humana em algo frio ou distante.",
   },
   {
-    title: "Base para crescimento",
-    text: "Placeholder para comunicar como o produto acompanha desde a pratica individual ate a expansao da operacao com equipe e indicadores.",
+    icon: Sparkles,
+    title: "Um projeto em evolução",
+    text: "Começa apoiando profissionais da Psicologia e abre caminho para novas soluções em saúde mental.",
   },
 ];
 
 export default function AboutPage() {
   return (
     <InstitutionalPageLayout
-      eyebrow="Sobre o Psivinculo"
-      title="Uma base institucional simples hoje, pronta para receber a historia oficial da marca."
-      description="Esta pagina foi criada para servir como estrutura institucional editavel, com organizacao clara e visual coerente com a identidade do produto."
+      eyebrow="Sobre o Psivínculo"
+      title="Criado com propósito, pensado para cuidar"
+      description="Uma plataforma criada por quem entende, na prática, o valor do cuidado psicológico."
     >
-      <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-        <div className="rounded-[1.8rem] border border-white/72 bg-white/84 p-6 shadow-[0_20px_58px_-42px_rgba(45,58,109,0.24)] sm:p-7">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-primary/82">Nossa proposta</p>
-          <h2 className="mt-3 font-heading text-3xl font-bold tracking-[-0.04em] text-foreground">
-            Texto institucional placeholder, organizado para facilitar edicao futura.
-          </h2>
-          <div className="mt-5 space-y-4 text-sm leading-7 text-foreground/68 sm:text-[15px]">
-            <p>
-              O Psivinculo pode apresentar aqui um texto oficial sobre origem, motivacao do produto e a forma
-              como a plataforma apoia psicologos e clinicas em uma rotina mais profissional, organizada e segura.
+      <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+        <aside className="mx-auto w-full max-w-sm rounded-[1.8rem] border border-white/72 bg-white/84 p-5 shadow-[0_20px_58px_-42px_rgba(45,58,109,0.24)] sm:p-6 lg:mx-0 lg:max-w-none">
+          <div className="aspect-[4/5] max-h-[28rem] overflow-hidden rounded-[1.35rem] bg-[linear-gradient(135deg,hsl(224_48%_96%),hsl(40_33%_98%))] lg:max-h-none">
+            <img
+              src="/images/rodrigo.jpeg"
+              alt="Rodrigo Ferreira, fundador do Psivínculo"
+              className="h-full w-full object-cover"
+              loading="eager"
+            />
+          </div>
+          <div className="mt-5 rounded-[1.35rem] border border-primary/10 bg-primary/5 p-5">
+            <p className="font-heading text-2xl font-bold text-foreground">Rodrigo Ferreira</p>
+            <p className="mt-2 text-sm font-semibold uppercase tracking-[0.16em] text-primary">
+              Fundador do Psivínculo
             </p>
-            <p>
-              Este bloco foi escrito como placeholder bem estruturado para permitir substituicao rapida depois,
-              sem precisar reconstruir a pagina. A ideia e deixar uma base institucional elegante desde ja.
-            </p>
-            <p>
-              Quando o conteudo definitivo estiver pronto, este espaco pode receber narrativa de marca, posicionamento,
-              historia da empresa, proposta de valor e visao de longo prazo.
+            <p className="mt-3 text-sm leading-6 text-foreground/68">
+              Formado em Análise e Desenvolvimento de Sistemas
             </p>
           </div>
-        </div>
+        </aside>
 
-        <div className="rounded-[1.8rem] border border-white/72 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(243,246,251,0.84))] p-6 shadow-[0_20px_58px_-42px_rgba(45,58,109,0.22)] sm:p-7">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-primary/82">Edicao futura</p>
-          <ul className="mt-4 space-y-3 text-sm leading-7 text-foreground/66">
-            <li className="flex items-start gap-3">
-              <span className="mt-2 h-2 w-2 rounded-full bg-primary" />
-              <span>Substituir o texto institucional por narrativa oficial da marca.</span>
-            </li>
-            <li className="flex items-start gap-3">
-              <span className="mt-2 h-2 w-2 rounded-full bg-primary" />
-              <span>Adicionar dados reais sobre empresa, missao, visao e posicionamento.</span>
-            </li>
-            <li className="flex items-start gap-3">
-              <span className="mt-2 h-2 w-2 rounded-full bg-primary" />
-              <span>Incluir prova social, marcos do produto e possiveis diferenciais oficiais.</span>
-            </li>
-          </ul>
-        </div>
+        <article className="rounded-[1.8rem] border border-white/72 bg-white/84 p-6 shadow-[0_20px_58px_-42px_rgba(45,58,109,0.24)] sm:p-7">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-primary/82">
+            História e origem
+          </p>
+          <div className="mt-5 space-y-4 text-sm leading-7 text-foreground/68 sm:text-[15px]">
+            <p>
+              O Psivínculo nasceu a partir de uma experiência pessoal com a saúde mental e da percepção de como o
+              acompanhamento psicológico pode transformar a vida de uma pessoa.
+            </p>
+            <p>
+              Meu nome é Rodrigo Ferreira, sou formado em Análise e Desenvolvimento de Sistemas. Durante um período
+              desafiador da minha vida, encontrei no acompanhamento psicológico um espaço essencial de cuidado, escuta e
+              reconstrução. Essa vivência me fez enxergar ainda mais de perto a importância do trabalho dos psicólogos.
+            </p>
+            <p>
+              Ao mesmo tempo, percebi que muitos profissionais da Psicologia precisam lidar com uma rotina cheia de
+              tarefas manuais: agenda, pacientes, prontuários, cobranças, confirmações, mensagens e organização
+              financeira. Muitas vezes, essas demandas tomam tempo de quem deveria estar focado no que realmente
+              importa: o cuidado com as pessoas.
+            </p>
+            <p>
+              Foi assim que surgiu o Psivínculo: uma plataforma criada para simplificar a rotina do psicólogo,
+              automatizar processos e centralizar a gestão do atendimento em um só lugar.
+            </p>
+            <p>
+              Mais do que um sistema, o Psivínculo é um projeto com propósito. A ideia é facilitar o trabalho dos
+              profissionais e, indiretamente, contribuir para que mais pessoas tenham acesso a um atendimento mais
+              organizado, humano e acolhedor.
+            </p>
+            <p>
+              Este é apenas o começo. O Psivínculo nasce com a missão de apoiar psicólogos hoje e, no futuro, abrir
+              caminho para outros projetos voltados a pessoas que enfrentam transtornos mentais e momentos difíceis.
+            </p>
+          </div>
+        </article>
       </section>
 
       <section className="grid gap-6 md:grid-cols-3">
-        {valueCards.map((card) => (
+        {purposeCards.map((card) => (
           <div
             key={card.title}
             className="rounded-[1.8rem] border border-white/72 bg-white/84 p-6 shadow-[0_20px_58px_-42px_rgba(45,58,109,0.22)]"
           >
-            <h3 className="font-heading text-xl font-semibold text-foreground">{card.title}</h3>
+            <div className="flex h-11 w-11 items-center justify-center rounded-[1rem] bg-primary/10">
+              <card.icon className="h-5 w-5 text-primary" />
+            </div>
+            <h2 className="mt-5 font-heading text-xl font-semibold text-foreground">{card.title}</h2>
             <p className="mt-3 text-sm leading-7 text-foreground/66">{card.text}</p>
           </div>
         ))}

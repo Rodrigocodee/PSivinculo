@@ -9,6 +9,7 @@ const ADMIN_ROLE_TOKENS = new Set([
   "clinicadministrator",
 ]);
 const APPROVED_PAYMENT_STATUSES = new Set(["CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"]);
+const ACCESS_GRANTED_PAYMENT_EVENTS = new Set(["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"]);
 const CANCELLED_PAYMENT_EVENTS = new Set([
   "PAYMENT_DELETED",
   "PAYMENT_REFUNDED",
@@ -222,13 +223,10 @@ function buildPaymentMethodLabel(value) {
 function shouldPropagateActiveWebhookState(input) {
   const eventType = normalizeString(input?.eventType).toUpperCase();
   const paymentStatus = normalizeString(input?.paymentStatus).toUpperCase();
-  const subscriptionStatus = normalizeString(input?.subscriptionStatus).toUpperCase();
 
   return (
-    eventType === "PAYMENT_RECEIVED" ||
-    eventType === "ACTIVE" ||
-    APPROVED_PAYMENT_STATUSES.has(paymentStatus) ||
-    subscriptionStatus === "ACTIVE"
+    ACCESS_GRANTED_PAYMENT_EVENTS.has(eventType) ||
+    APPROVED_PAYMENT_STATUSES.has(paymentStatus)
   );
 }
 
@@ -262,11 +260,15 @@ function deriveLocalSubscriptionState(input) {
   const paymentStatus = normalizeString(input.paymentStatus).toUpperCase();
   const subscriptionStatus = normalizeString(input.subscriptionStatus).toUpperCase();
   const preserveActiveState = input?.preserveActiveState === true;
+  const previousSubscriptionActive = input?.previousSubscriptionActive === true;
 
   if (
     preserveActiveState &&
-    !eventType &&
-    (subscriptionStatus === "ACTIVE" || normalizeString(input.fallbackStatus).toUpperCase() === "ACTIVE")
+    previousSubscriptionActive &&
+    !CANCELLED_PAYMENT_EVENTS.has(eventType) &&
+    !CANCELLED_SUBSCRIPTION_EVENTS.has(eventType) &&
+    eventType !== "PAYMENT_OVERDUE" &&
+    paymentStatus !== "OVERDUE"
   ) {
     return {
       localStatus: "ACTIVE",
@@ -274,25 +276,7 @@ function deriveLocalSubscriptionState(input) {
     };
   }
 
-  if (
-    subscriptionStatus === "ACTIVE" &&
-    !paymentStatus &&
-    normalizeString(input.fallbackStatus).toUpperCase() === "ACTIVE"
-  ) {
-    return {
-      localStatus: "ACTIVE",
-      subscriptionActive: true,
-    };
-  }
-
-  if (subscriptionStatus === "ACTIVE" && eventType === "SUBSCRIPTION_UPDATED") {
-    return {
-      localStatus: "ACTIVE",
-      subscriptionActive: true,
-    };
-  }
-
-  if (APPROVED_PAYMENT_STATUSES.has(paymentStatus) || ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(eventType)) {
+  if (APPROVED_PAYMENT_STATUSES.has(paymentStatus) || ACCESS_GRANTED_PAYMENT_EVENTS.has(eventType)) {
     return {
       localStatus: "ACTIVE",
       subscriptionActive: true,
@@ -1110,6 +1094,7 @@ export async function persistAsaasSubscriptionState(input, env = process.env) {
     subscriptionStatus: input?.subscriptionStatus,
     fallbackStatus: input?.fallbackStatus || existingRecord?.status_assinatura,
     preserveActiveState: input?.preserveActiveState === true,
+    previousSubscriptionActive: existingRecord?.assinatura_ativa === true,
   });
   const payload = {
     owner_type: persistedOwner.ownerType,
@@ -1203,6 +1188,29 @@ export async function persistAsaasSubscriptionState(input, env = process.env) {
     localStatus: payload.status_assinatura,
     subscriptionActive: payload.assinatura_ativa,
   });
+
+  if (!payload.assinatura_ativa && PENDING_SUBSCRIPTION_EVENTS.has(normalizeString(input?.eventType).toUpperCase())) {
+    logBillingStore("subscription_created_without_payment", {
+      asaasSubscriptionId,
+      eventType: normalizeString(input?.eventType).toUpperCase(),
+      localStatus: payload.status_assinatura,
+    });
+  } else if (payload.assinatura_ativa && shouldPropagateActiveWebhookState(input)) {
+    logBillingStore("subscription_payment_confirmed_access_granted", {
+      asaasSubscriptionId,
+      eventType: normalizeString(input?.eventType).toUpperCase() || null,
+      paymentStatus: normalizeString(input?.paymentStatus).toUpperCase() || null,
+    });
+  } else if (
+    !payload.assinatura_ativa &&
+    normalizeString(input?.subscriptionStatus).toUpperCase() === "ACTIVE"
+  ) {
+    logBillingStore("subscription_access_denied_pending_payment", {
+      asaasSubscriptionId,
+      eventType: normalizeString(input?.eventType).toUpperCase() || null,
+      paymentStatus: normalizeString(input?.paymentStatus).toUpperCase() || null,
+    });
+  }
 
   return persistedRecord;
 }
