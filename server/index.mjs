@@ -31,6 +31,18 @@ const INDEX_FILE = path.join(DIST_DIR, "index.html");
 const JSON_BODY_LIMIT_BYTES = 64 * 1024;
 const PORT = Number.parseInt(process.env.PORT || "3001", 10);
 const HOST = process.env.HOST?.trim() || "0.0.0.0";
+const ALLOWED_CORS_ORIGINS = new Set([
+  "https://www.psivinculo.com.br",
+  "https://psivinculo.com.br",
+  "https://p-sivinculo.vercel.app",
+]);
+const CORS_ALLOWED_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
+const CORS_ALLOWED_HEADERS = [
+  "Content-Type",
+  "Authorization",
+  "x-asaas-access-token",
+  "x-webhook-token",
+].join(", ");
 
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -67,6 +79,29 @@ function getHeaderValue(headers, headerName) {
 
 function buildUrl(request) {
   return new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+}
+
+function applyCorsHeaders(request, response) {
+  const origin = getHeaderValue(request.headers, "origin") || getHeaderValue(request.headers, "Origin");
+
+  response.setHeader("Vary", "Origin");
+  response.setHeader("Access-Control-Allow-Methods", CORS_ALLOWED_METHODS);
+  response.setHeader("Access-Control-Allow-Headers", CORS_ALLOWED_HEADERS);
+  response.setHeader("Access-Control-Max-Age", "86400");
+
+  if (ALLOWED_CORS_ORIGINS.has(origin)) {
+    response.setHeader("Access-Control-Allow-Origin", origin);
+  }
+}
+
+function handleCorsPreflight(request, response, pathname) {
+  if (request.method !== "OPTIONS" || !pathname.startsWith("/api/")) {
+    return false;
+  }
+
+  response.writeHead(204);
+  response.end();
+  return true;
 }
 
 function areSecretsEqual(left, right) {
@@ -795,6 +830,12 @@ const server = createServer(async (request, response) => {
   const url = buildUrl(request);
 
   try {
+    applyCorsHeaders(request, response);
+
+    if (handleCorsPreflight(request, response, url.pathname)) {
+      return;
+    }
+
     const handledApiRequest = await handleApiRequest(request, response, url.pathname);
 
     if (!handledApiRequest) {
