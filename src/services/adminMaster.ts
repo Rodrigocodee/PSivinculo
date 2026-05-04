@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { buildServerApiUrl } from "@/services/serverApi";
 
 export type AdminMasterSummary = {
   psychologistsTotal: number;
@@ -161,7 +162,7 @@ export async function fetchAdminMasterOverview(
     );
   }
 
-  const response = await fetch("/api/admin-master/overview", {
+  const response = await fetch(buildServerApiUrl("/api/admin-master/overview"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -197,7 +198,7 @@ export async function executeAdminMasterAction(
     );
   }
 
-  const response = await fetch("/api/admin-master/action", {
+  const response = await fetch(buildServerApiUrl("/api/admin-master/action"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
