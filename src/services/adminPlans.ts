@@ -11,6 +11,7 @@ import {
   resolveSubscriptionAccessFromSource,
 } from "@/lib/subscriptionAccess";
 import { supabase } from "@/lib/supabase";
+import { buildServerApiUrl } from "@/services/serverApi";
 import { getCurrentAdminContext } from "@/services/currentAdmin";
 
 type UserRow = {
@@ -427,7 +428,7 @@ async function buildAuthorizedHeaders() {
 }
 
 async function callSubscriptionApi<T>(path: string, body: Record<string, unknown>, fallbackMessage: string) {
-  const response = await fetch(path, {
+  const response = await fetch(buildServerApiUrl(path), {
     method: "POST",
     headers: await buildAuthorizedHeaders(),
     body: JSON.stringify(body),

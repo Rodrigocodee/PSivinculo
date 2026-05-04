@@ -5,6 +5,7 @@ import {
 import { createAsaasSubscriptionForPlan, type AsaasCheckoutResponse } from "@/services/asaasCheckout";
 import {
   buildAuthenticatedJsonRequestHeaders,
+  buildServerApiUrl,
   readServerJsonResponse,
 } from "@/services/serverApi";
 
@@ -72,7 +73,7 @@ export async function createPsychologistPlanSubscription(input: {
 }
 
 export async function createPsychologistSubscriptionPaymentLink(subscriptionId?: string | null) {
-  const response = await fetch("/api/asaas/subscription-payment-link", {
+  const response = await fetch(buildServerApiUrl("/api/asaas/subscription-payment-link"), {
     method: "POST",
     headers: await buildAuthenticatedJsonRequestHeaders(),
     body: JSON.stringify({

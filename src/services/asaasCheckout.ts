@@ -4,6 +4,7 @@ import {
   type PublicPlanSlug,
 } from "@/config/publicCheckout";
 import { supabase } from "@/lib/supabase";
+import { buildServerApiUrl } from "@/services/serverApi";
 
 export type AsaasCheckoutCustomerInput = {
   name: string;
@@ -85,15 +86,6 @@ function buildPaymentReturnCallback() {
   };
 }
 
-function buildApiUrl(path: string) {
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/g, "");
-
-  if (!configuredBaseUrl) return normalizedPath;
-
-  return new URL(normalizedPath, `${configuredBaseUrl}/`).toString();
-}
-
 export async function createAsaasSubscriptionForPlan(input: {
   planKey: PublicPlanCheckoutKey;
   customer: AsaasCheckoutCustomerInput;
@@ -105,7 +97,7 @@ export async function createAsaasSubscriptionForPlan(input: {
   const timeoutId = window.setTimeout(() => controller.abort(), input.timeoutMs ?? 25_000);
 
   try {
-    const response = await fetch(buildApiUrl("/api/asaas/create-subscription"), {
+    const response = await fetch(buildServerApiUrl("/api/asaas/create-subscription"), {
       method: "POST",
       headers: await buildCheckoutRequestHeaders(),
       body: JSON.stringify({

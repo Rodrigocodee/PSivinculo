@@ -1,5 +1,6 @@
 import {
   buildAuthenticatedJsonRequestHeaders,
+  buildServerApiUrl,
   readServerJsonResponse,
 } from "@/services/serverApi";
 
@@ -64,7 +65,7 @@ async function callPsychologistSubscriptionApi<T>(
   body: Record<string, unknown>,
   fallbackMessage: string,
 ) {
-  const response = await fetch(path, {
+  const response = await fetch(buildServerApiUrl(path), {
     method: "POST",
     headers: await buildAuthenticatedJsonRequestHeaders(),
     body: JSON.stringify({

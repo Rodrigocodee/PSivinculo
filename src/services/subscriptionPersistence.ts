@@ -1,6 +1,7 @@
 import type { AsaasCheckoutPersistenceDraft, AsaasCheckoutResponse } from "@/services/asaasCheckout";
 import type { PublicPlanSlug } from "@/config/publicCheckout";
 import { supabase } from "@/lib/supabase";
+import { buildServerApiUrl } from "@/services/serverApi";
 
 const LOCAL_STORAGE_KEY = "psivinculo.pending_subscription";
 
@@ -98,7 +99,7 @@ export async function linkPendingSubscriptionAfterRegistration(input: {
     return null;
   }
 
-  const response = await fetch("/api/asaas/link-pending-subscriptions", {
+  const response = await fetch(buildServerApiUrl("/api/asaas/link-pending-subscriptions"), {
     method: "POST",
     headers: await buildLinkRequestHeaders(),
     body: JSON.stringify({
