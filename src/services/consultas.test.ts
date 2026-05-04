@@ -265,6 +265,12 @@ import {
 } from "@/services/consultas";
 import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 
+function expectedServerApiUrl(pathname: string) {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/g, "") ?? "";
+
+  return apiBaseUrl ? `${apiBaseUrl}${pathname}` : pathname;
+}
+
 describe("consultas service", () => {
   const fetchMock = vi.fn();
 
@@ -296,7 +302,7 @@ describe("consultas service", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/consultas/update",
+      expectedServerApiUrl("/api/consultas/update"),
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({

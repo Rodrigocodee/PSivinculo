@@ -1,5 +1,7 @@
 import { supabase } from "@/lib/supabase";
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/g, "") ?? "";
+
 type ServerErrorResponse = {
   success?: false;
   error?: {
@@ -53,6 +55,12 @@ export async function buildAuthenticatedJsonRequestHeaders() {
   }
 
   return headers;
+}
+
+export function buildServerApiUrl(pathname: string) {
+  const normalizedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+
+  return API_BASE_URL ? `${API_BASE_URL}${normalizedPath}` : normalizedPath;
 }
 
 export async function readServerJsonResponse<T>(

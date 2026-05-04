@@ -7,6 +7,7 @@ import {
 } from "@/services/consultaResponseSchema";
 import {
   buildAuthenticatedJsonRequestHeaders,
+  buildServerApiUrl,
   readServerJsonResponse,
 } from "@/services/serverApi";
 import { resolvePsychologistNameById } from "@/services/psychologistLookup";
@@ -498,7 +499,7 @@ export async function respondPatientCounterproposal(input: {
   acao: PatientCounterproposalResponseAction;
 }) {
   try {
-    const response = await fetch("/api/consultas/respond-counterproposal", {
+    const response = await fetch(buildServerApiUrl("/api/consultas/respond-counterproposal"), {
       method: "POST",
       headers: await buildAuthenticatedJsonRequestHeaders(),
       body: JSON.stringify({

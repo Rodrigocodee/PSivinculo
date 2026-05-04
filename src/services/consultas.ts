@@ -5,6 +5,7 @@ import {
 } from "@/services/consultaResponseSchema";
 import {
   buildAuthenticatedJsonRequestHeaders,
+  buildServerApiUrl,
   readServerJsonResponse,
 } from "@/services/serverApi";
 import { assertProfessionalAccessFromScope } from "@/services/professionalAccessGuard";
@@ -254,7 +255,7 @@ async function postConsultationMutation(
   payload: Record<string, unknown>,
   fallbackMessage: string,
 ): Promise<ConsultationMutationResult> {
-  const response = await fetch(pathname, {
+  const response = await fetch(buildServerApiUrl(pathname), {
     method: "POST",
     headers: await buildAuthenticatedJsonRequestHeaders(),
     body: JSON.stringify(payload),

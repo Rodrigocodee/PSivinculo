@@ -169,6 +169,12 @@ import {
   requestPatientAppointment,
 } from "@/services/patientAppointments";
 
+function expectedServerApiUrl(pathname: string) {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/g, "") ?? "";
+
+  return apiBaseUrl ? `${apiBaseUrl}${pathname}` : pathname;
+}
+
 function buildPatientContext(overrides: MutableRecord = {}) {
   return {
     user: {
@@ -417,7 +423,7 @@ describe("patientAppointments", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/consultas/respond-counterproposal",
+      expectedServerApiUrl("/api/consultas/respond-counterproposal"),
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
