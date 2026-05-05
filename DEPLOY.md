@@ -52,8 +52,8 @@ Nao reutilize chave de sandbox em producao nem token de webhook entre ambientes.
 
 Configure no Asaas as URLs publicas do backend:
 
-- Assinaturas: `https://SEU_BACKEND_PUBLICO/api/asaas/webhook`
-- Pagamentos de consultas: `https://SEU_BACKEND_PUBLICO/api/webhooks/asaas/consultas`
+- Assinaturas: `https://api.psivinculo.com.br/api/asaas/webhook`
+- Pagamentos de consultas: `https://api.psivinculo.com.br/api/webhooks/asaas/consultas`
 
 O header/token configurado no Asaas deve bater com `ASAAS_WEBHOOK_TOKEN`.
 

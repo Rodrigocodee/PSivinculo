@@ -3,6 +3,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -30,27 +31,73 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [appUser, setAppUser] = useState<AuthenticatedAppUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const appUserRef = useRef<AuthenticatedAppUser | null>(null);
+  const lastResolvedSessionKeyRef = useRef<string | null>(null);
+  const lastAuthSyncAtRef = useRef(0);
+  const syncAuthStatePromiseRef = useRef<Promise<void> | null>(null);
 
-  async function syncAuthState(nextSession?: Session | null) {
-    const resolvedSession =
-      nextSession !== undefined ? nextSession : (await supabase.auth.getSession()).data.session;
+  function updateAppUser(nextAppUser: AuthenticatedAppUser | null) {
+    appUserRef.current = nextAppUser;
+    setAppUser(nextAppUser);
+  }
 
-    setSession(resolvedSession ?? null);
+  function getSessionSyncKey(nextSession: Session | null) {
+    if (!nextSession?.user) return "anonymous";
+    return `${nextSession.user.id}:${nextSession.expires_at ?? ""}`;
+  }
 
-    if (!resolvedSession?.user) {
-      setAppUser(null);
-      setIsLoading(false);
-      return;
+  async function syncAuthState(
+    nextSession?: Session | null,
+    options: { force?: boolean } = {},
+  ) {
+    if (syncAuthStatePromiseRef.current && !options.force) {
+      return syncAuthStatePromiseRef.current;
     }
 
+    const syncPromise = (async () => {
+      const resolvedSession =
+        nextSession !== undefined ? nextSession : (await supabase.auth.getSession()).data.session;
+      const sessionSyncKey = getSessionSyncKey(resolvedSession ?? null);
+      const isRecentSameSession =
+        lastResolvedSessionKeyRef.current === sessionSyncKey &&
+        Date.now() - lastAuthSyncAtRef.current < 120_000;
+
+      setSession(resolvedSession ?? null);
+
+      if (!resolvedSession?.user) {
+        updateAppUser(null);
+        lastResolvedSessionKeyRef.current = sessionSyncKey;
+        lastAuthSyncAtRef.current = Date.now();
+        setIsLoading(false);
+        return;
+      }
+
+      if (!options.force && appUserRef.current && isRecentSameSession) {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const resolvedAppUser = await resolveAuthenticatedAppUser(resolvedSession.user);
+        updateAppUser(resolvedAppUser);
+        lastResolvedSessionKeyRef.current = sessionSyncKey;
+        lastAuthSyncAtRef.current = Date.now();
+      } catch (error) {
+        console.error("Erro ao resolver usuario autenticado:", error);
+        updateAppUser(null);
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+
+    syncAuthStatePromiseRef.current = syncPromise;
+
     try {
-      const resolvedAppUser = await resolveAuthenticatedAppUser(resolvedSession.user);
-      setAppUser(resolvedAppUser);
-    } catch (error) {
-      console.error("Erro ao resolver usuario autenticado:", error);
-      setAppUser(null);
+      await syncPromise;
     } finally {
-      setIsLoading(false);
+      if (syncAuthStatePromiseRef.current === syncPromise) {
+        syncAuthStatePromiseRef.current = null;
+      }
     }
   }
 
@@ -68,7 +115,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         console.error("Erro ao carregar sessao:", error);
         if (!isMounted) return;
         setSession(null);
-        setAppUser(null);
+        updateAppUser(null);
         setIsLoading(false);
       }
     }
@@ -109,7 +156,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         isLoading,
         refreshAuth: async () => {
           setIsLoading(true);
-          await syncAuthState();
+          await syncAuthState(undefined, { force: true });
         },
       }}
     >

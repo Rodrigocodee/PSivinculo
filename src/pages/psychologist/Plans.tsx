@@ -75,10 +75,10 @@ export default function PsychologistPlans() {
   const [documentValue, setDocumentValue] = useState("");
   const plans = useMemo(() => listPsychologistIndividualPlans(), []);
   const subscriptionQuery = useQuery({
-    queryKey: psychologistPlanSelectionQueryKey,
+    queryKey: psychologistSubscriptionQueryKey,
     queryFn: fetchPsychologistSubscription,
     staleTime: 30_000,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
     retry: false,
   });
   const currentPlan = subscriptionQuery.data?.currentPlan || null;
@@ -97,9 +97,12 @@ export default function PsychologistPlans() {
     if (!hasPendingSubscription) return;
 
     const intervalId = window.setInterval(() => {
-      void refetchSubscription();
-      void refreshAuth();
-    }, 15_000);
+      void refetchSubscription().then((result) => {
+        if (result.data?.currentPlan?.subscriptionActive === true) {
+          void refreshAuth();
+        }
+      });
+    }, 30_000);
 
     return () => window.clearInterval(intervalId);
   }, [hasPendingSubscription, refreshAuth, refetchSubscription]);

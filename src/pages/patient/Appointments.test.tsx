@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import PatientAppointments from "@/pages/patient/Appointments";
 
 const fetchPatientAppointmentsDataMock = vi.fn();
+const requestPatientAppointmentMock = vi.fn();
 
 vi.mock("@/components/layout/AppLayout", () => ({
   AppLayout: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -19,6 +20,14 @@ vi.mock("@/components/ui/sonner", () => ({
 }));
 
 vi.mock("@/services/psychologistConsultationSettings", () => ({
+  getAvailableModalities: (value: string | null | undefined) => {
+    const normalized = String(value || "").trim().toLowerCase();
+
+    if (normalized === "online") return ["online"];
+    if (normalized === "presencial") return ["presencial"];
+
+    return ["presencial", "online"];
+  },
   getConsultationModalityLabel: (value: string | null) =>
     value === "online" ? "Online" : value === "presencial" ? "Presencial" : "Nao definida",
 }));
@@ -27,7 +36,7 @@ vi.mock("@/services/patientAppointments", () => ({
   patientAppointmentsQueryKey: ["patient-appointments"],
   fetchPatientAppointmentsData: (...args: unknown[]) => fetchPatientAppointmentsDataMock(...args),
   respondPatientCounterproposal: vi.fn(),
-  requestPatientAppointment: vi.fn(),
+  requestPatientAppointment: (...args: unknown[]) => requestPatientAppointmentMock(...args),
 }));
 
 function createQueryClient() {
@@ -234,5 +243,47 @@ describe("PatientAppointments", () => {
     screen.getByRole("button", { name: "Detalhes" }).click();
 
     expect((await screen.findAllByRole("link", { name: "Pagar consulta" })).length).toBeGreaterThan(0);
+  });
+
+  it("usa somente a modalidade online no modal quando o psicologo atende online", async () => {
+    fetchPatientAppointmentsDataMock.mockResolvedValue({
+      patient: {
+        fullName: "Bala doida",
+      },
+      appointments: [],
+      hasLinkedPatientRecord: true,
+      canRequestAppointment: true,
+      consultationSettings: {
+        consultationPrice: 180,
+        consultationDurationMinutes: 50,
+        consultationModality: "online",
+        attendsPresential: false,
+        attendsOnline: true,
+        presentialLocation: "",
+        onlineSessionLink: "",
+      },
+      availabilitySettings: null,
+    });
+    requestPatientAppointmentMock.mockResolvedValue({
+      appointment: { id: "consulta-online" },
+    });
+
+    renderPage("/paciente/agendamentos");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Solicitar Horario" }));
+
+    expect(await screen.findByText("Online")).toBeInTheDocument();
+    expect(screen.queryByText("Presencial")).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Online" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Enviar solicitacao" }));
+
+    await waitFor(() => {
+      expect(requestPatientAppointmentMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          modality: "online",
+        }),
+      );
+    });
   });
 });

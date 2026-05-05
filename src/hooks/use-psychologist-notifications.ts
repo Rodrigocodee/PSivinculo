@@ -14,9 +14,9 @@ export function usePsychologistNotifications(enabled = true) {
     queryKey: psychologistNotificationsQueryKey,
     queryFn: listPsychologistNotifications,
     enabled,
-    staleTime: 15_000,
-    refetchInterval: enabled ? 15_000 : false,
-    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+    refetchInterval: enabled ? 60_000 : false,
+    refetchOnWindowFocus: false,
   });
 
   async function markAsRead(notificationIds: string[]) {

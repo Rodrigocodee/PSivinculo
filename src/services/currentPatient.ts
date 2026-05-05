@@ -154,7 +154,9 @@ async function findCurrentPacienteRecord(user: User | null): Promise<CurrentPaci
   return null;
 }
 
-export async function getCurrentPaciente(): Promise<CurrentPacienteContext> {
+let currentPacienteRequest: Promise<CurrentPacienteContext> | null = null;
+
+async function resolveCurrentPaciente(): Promise<CurrentPacienteContext> {
   const user = await getAuthenticatedUser();
   const lookup = await findCurrentPacienteRecord(user);
   const record = lookup?.row || null;
@@ -198,6 +200,16 @@ export async function getCurrentPaciente(): Promise<CurrentPacienteContext> {
     email: normalizeEmail(user?.email) || pickString(record, ["email"]),
     isLinked,
   };
+}
+
+export async function getCurrentPaciente(): Promise<CurrentPacienteContext> {
+  if (!currentPacienteRequest) {
+    currentPacienteRequest = resolveCurrentPaciente().finally(() => {
+      currentPacienteRequest = null;
+    });
+  }
+
+  return currentPacienteRequest;
 }
 
 export const getCurrentPatientContext = getCurrentPaciente;

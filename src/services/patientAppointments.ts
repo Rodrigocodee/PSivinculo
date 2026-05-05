@@ -12,6 +12,7 @@ import {
 } from "@/services/serverApi";
 import { resolvePsychologistNameById } from "@/services/psychologistLookup";
 import {
+  getAvailableModalities,
   getPsychologistConsultationSettingsById,
   normalizeAppointmentModality,
   type AppointmentModality,
@@ -343,8 +344,7 @@ export async function requestPatientAppointment(input: PatientAppointmentRequest
   const availabilitySettings = linkedPsychologistId
     ? await getPsychologistAvailabilityById(linkedPsychologistId)
     : null;
-  const allowsPresential = consultationSettings?.attendsPresential ?? true;
-  const allowsOnline = consultationSettings?.attendsOnline ?? true;
+  const availableModalities = getAvailableModalities(consultationSettings?.consultationModality ?? null);
   const consultationPrice =
     typeof consultationSettings?.consultationPrice === "number"
       ? Number(consultationSettings.consultationPrice.toFixed(2))
@@ -355,16 +355,16 @@ export async function requestPatientAppointment(input: PatientAppointmentRequest
     null;
   let resolvedModality: AppointmentModality | null = null;
 
-  if (allowsPresential && allowsOnline) {
+  if (availableModalities.length > 1) {
     if (!requestedModality) {
       throw new Error("Escolha se o atendimento sera presencial ou online.");
     }
 
-    resolvedModality = requestedModality;
-  } else if (allowsPresential) {
-    resolvedModality = "presencial";
-  } else if (allowsOnline) {
-    resolvedModality = "online";
+    resolvedModality = availableModalities.includes(requestedModality)
+      ? requestedModality
+      : availableModalities[0] ?? null;
+  } else {
+    resolvedModality = availableModalities[0] ?? null;
   }
 
   if (!resolvedModality) {

@@ -103,6 +103,14 @@ vi.mock("@/services/psychologistLookup", () => ({
 
 vi.mock("@/services/psychologistConsultationSettings", () => ({
   getPsychologistConsultationSettingsById: mocks.getPsychologistConsultationSettingsById,
+  getAvailableModalities: (value: string | null | undefined) => {
+    const normalized = String(value || "").trim().toLowerCase();
+
+    if (normalized === "online") return ["online"];
+    if (normalized === "presencial") return ["presencial"];
+
+    return ["presencial", "online"];
+  },
   normalizeAppointmentModality: (value: string | null | undefined) => {
     const normalized = String(value || "").trim().toLowerCase();
 
@@ -373,6 +381,43 @@ describe("patientAppointments", () => {
         modalidade_consulta: "presencial",
         valor_consulta: 180,
         status: "solicitada",
+      }),
+    ]);
+  });
+
+  it("uses the configured psychologist modality when the request sends a disallowed modality", async () => {
+    mocks.setCurrentPatient(buildPatientContext());
+    mocks.getPsychologistConsultationSettingsById.mockResolvedValue(
+      buildConsultationSettings({
+        attendsPresential: false,
+        attendsOnline: true,
+        consultationModality: "online",
+      }),
+    );
+    mocks.getPsychologistAvailabilityById.mockResolvedValue(buildAvailabilitySettings());
+    mocks.setInsertResult({
+      data: [
+        {
+          id: "consulta-4",
+          paciente_id: "patient-auth-1",
+          psicologo_id: "psi-1",
+          clinica_id: "clinic-1",
+          data_consulta: "2099-05-04T09:30:00",
+          status: "solicitada",
+        },
+      ],
+      error: null,
+    });
+
+    await requestPatientAppointment({
+      requestedDate: "2099-05-04",
+      requestedTime: "09:30",
+      modality: "presencial",
+    });
+
+    expect(mocks.getLastInsertedRows()).toEqual([
+      expect.objectContaining({
+        modalidade_consulta: "online",
       }),
     ]);
   });

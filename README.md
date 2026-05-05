@@ -60,9 +60,14 @@ PORT=3001
 POST /api/asaas/create-subscription
 ```
 
-### Webhook do Asaas
+### Webhook de assinaturas/planos do Asaas
 ```http
 POST /api/asaas/webhook
+```
+
+### Webhook de pagamentos de consultas do Asaas
+```http
+POST /api/webhooks/asaas/consultas
 ```
 
 ---

@@ -1,0 +1,100 @@
+const GA_MEASUREMENT_ID = import.meta.env.VITE_GA_MEASUREMENT_ID?.trim() || "";
+const GA_SCRIPT_ID = "psivinculo-ga4";
+
+type GtagCommand = [
+  command: "js",
+  date: Date,
+] | [
+  command: "config",
+  targetId: string,
+  config?: Record<string, unknown>,
+] | [
+  command: "event",
+  eventName: string,
+  params?: Record<string, unknown>,
+];
+
+declare global {
+  interface Window {
+    dataLayer?: GtagCommand[];
+    gtag?: (...args: GtagCommand) => void;
+  }
+}
+
+let isInitialized = false;
+let lastTrackedPath = "";
+
+function canUseAnalytics() {
+  return Boolean(GA_MEASUREMENT_ID) && typeof window !== "undefined" && typeof document !== "undefined";
+}
+
+function ensureGtag() {
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = window.gtag || function gtag(...args: GtagCommand) {
+    window.dataLayer?.push(args);
+  };
+}
+
+function isLikelyIdentifier(segment: string) {
+  return (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(segment) ||
+    /^[A-Za-z0-9_-]{20,}$/.test(segment)
+  );
+}
+
+export function sanitizeAnalyticsPath(pathname: string) {
+  const normalizedPath = pathname.trim().startsWith("/") ? pathname.trim() : `/${pathname.trim()}`;
+  const pathWithoutSearch = normalizedPath.split(/[?#]/)[0] || "/";
+
+  if (/^\/psi\/pacientes\/[^/]+$/.test(pathWithoutSearch)) {
+    return "/psi/pacientes/:id";
+  }
+
+  if (/^\/psi\/prontuarios\/[^/]+$/.test(pathWithoutSearch)) {
+    return "/psi/prontuarios/:id";
+  }
+
+  return pathWithoutSearch
+    .split("/")
+    .map((segment) => (segment && isLikelyIdentifier(segment) ? ":id" : segment))
+    .join("/") || "/";
+}
+
+export function initializeAnalytics() {
+  if (!canUseAnalytics() || isInitialized) return;
+
+  ensureGtag();
+
+  if (!document.getElementById(GA_SCRIPT_ID)) {
+    const script = document.createElement("script");
+    script.id = GA_SCRIPT_ID;
+    script.async = true;
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(GA_MEASUREMENT_ID)}`;
+    document.head.appendChild(script);
+  }
+
+  window.gtag?.("js", new Date());
+  window.gtag?.("config", GA_MEASUREMENT_ID, {
+    send_page_view: false,
+    anonymize_ip: true,
+  });
+
+  isInitialized = true;
+}
+
+export function trackPageView(pathname: string) {
+  if (!canUseAnalytics()) return;
+
+  initializeAnalytics();
+
+  const pagePath = sanitizeAnalyticsPath(pathname);
+  if (pagePath === lastTrackedPath) return;
+
+  lastTrackedPath = pagePath;
+  window.gtag?.("event", "page_view", {
+    page_path: pagePath,
+    page_location: `${window.location.origin}${pagePath}`,
+    page_title: "PSIVINCULO",
+  });
+}
+

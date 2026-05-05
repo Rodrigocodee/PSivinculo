@@ -79,12 +79,20 @@ async function callPsychologistSubscriptionApi<T>(
 
 export const psychologistSubscriptionQueryKey = ["psychologist-subscription"];
 
+let currentSubscriptionRequest: Promise<PsychologistSubscriptionData> | null = null;
+
 export async function fetchPsychologistSubscription() {
-  return callPsychologistSubscriptionApi<PsychologistSubscriptionData>(
-    "/api/asaas/current-plan",
-    {},
-    "Nao foi possivel carregar a assinatura agora.",
-  );
+  if (!currentSubscriptionRequest) {
+    currentSubscriptionRequest = callPsychologistSubscriptionApi<PsychologistSubscriptionData>(
+      "/api/asaas/current-plan",
+      {},
+      "Nao foi possivel carregar a assinatura agora.",
+    ).finally(() => {
+      currentSubscriptionRequest = null;
+    });
+  }
+
+  return currentSubscriptionRequest;
 }
 
 export async function cancelPsychologistSubscription(subscriptionId?: string | null) {

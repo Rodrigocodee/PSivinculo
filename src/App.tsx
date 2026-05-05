@@ -1,6 +1,6 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -8,6 +8,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { PermissionsProvider } from "@/contexts/PermissionsContext";
 import { RedirectAuthenticated, RequireAuth } from "@/components/auth/AuthRouteGuard";
 import { RequirePsychologistReceivablesEnabled } from "@/components/auth/RequirePsychologistReceivablesEnabled";
+import { trackPageView } from "@/lib/analytics";
 
 const LandingPage = lazy(() => import("./pages/LandingPage"));
 const PublicDemoPage = lazy(() => import("./pages/PublicDemoPage"));
@@ -81,6 +82,16 @@ function AppRouteFallback() {
   );
 }
 
+function AnalyticsPageViewTracker() {
+  const location = useLocation();
+
+  useEffect(() => {
+    trackPageView(location.pathname);
+  }, [location.pathname]);
+
+  return null;
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
@@ -89,6 +100,7 @@ const App = () => (
           <Toaster />
           <Sonner />
           <BrowserRouter>
+            <AnalyticsPageViewTracker />
             <Suspense fallback={<AppRouteFallback />}>
               <Routes>
                 <Route path="/" element={<LandingPage />} />

@@ -243,6 +243,7 @@ function normalizeConsultationModality(value: string | null | undefined): Consul
   if (
     [
       "hibrido",
+      "presencial_online",
       "presencial_e_online",
       "presencial e online",
       "ambos",
@@ -262,6 +263,17 @@ function normalizeConsultationModality(value: string | null | undefined): Consul
 export function normalizeAppointmentModality(value: string | null | undefined): AppointmentModality | null {
   const modality = normalizeConsultationModality(value);
   return modality === "presencial" || modality === "online" ? modality : null;
+}
+
+export function getAvailableModalities(
+  configuredModality: ConsultationModality | AppointmentModality | string | null | undefined,
+): AppointmentModality[] {
+  const modality = normalizeConsultationModality(configuredModality);
+
+  if (modality === "online") return ["online"];
+  if (modality === "presencial") return ["presencial"];
+
+  return ["presencial", "online"];
 }
 
 function resolvePsychologistId(row: Record<string, unknown> | null | undefined, fallbackId?: string | null) {
@@ -557,6 +569,14 @@ export async function getCurrentPsychologistConsultationSettings() {
 
 export async function getPsychologistConsultationSettingsById(psychologistId: string) {
   const usuariosRow = await findUsuariosRecordByPsychologistId(psychologistId);
+
+  if (!usuariosRow) {
+    console.warn("[Psivinculo][psychologist-consultation-settings][usuarios_record_not_found_by_id]", {
+      psychologistId,
+      fallback: "hibrido",
+    });
+  }
+
   return buildSettingsFromRow(usuariosRow, psychologistId);
 }
 

@@ -169,6 +169,7 @@ vi.mock("@/services/currentPsychologist", () => ({
 }));
 
 import {
+  getAvailableModalities,
   resolvePsychologistConsultationSettingsSnapshot,
   saveCurrentPsychologistConsultationSettings,
   saveCurrentPsychologistOnlineSessionLink,
@@ -268,5 +269,14 @@ describe("psychologistConsultationSettings.saveCurrentPsychologistOnlineSessionL
     expect(snapshot.consultationModality).toBe("hibrido");
     expect(snapshot.attendsPresential).toBe(true);
     expect(snapshot.attendsOnline).toBe(true);
+  });
+
+  it("resolves available patient modalities from saved consultation modality variations", () => {
+    expect(getAvailableModalities("online")).toEqual(["online"]);
+    expect(getAvailableModalities("presencial")).toEqual(["presencial"]);
+    expect(getAvailableModalities("presencial_online")).toEqual(["presencial", "online"]);
+    expect(getAvailableModalities("presencial_e_online")).toEqual(["presencial", "online"]);
+    expect(getAvailableModalities("Presencial e online")).toEqual(["presencial", "online"]);
+    expect(getAvailableModalities("ambos")).toEqual(["presencial", "online"]);
   });
 });

@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { toast } from "@/components/ui/sonner";
 import {
+  getAvailableModalities,
   getConsultationModalityLabel,
   type AppointmentModality,
 } from "@/services/psychologistConsultationSettings";
@@ -78,14 +79,8 @@ function formatCurrency(value: number | null) {
   }).format(value);
 }
 
-function getInitialRequestModality(
-  allowsPresential: boolean | undefined,
-  allowsOnline: boolean | undefined,
-): AppointmentModality | null {
-  if (allowsPresential && allowsOnline) return "presencial";
-  if (allowsPresential) return "presencial";
-  if (allowsOnline) return "online";
-  return null;
+function getInitialRequestModality(availableModalities: AppointmentModality[]): AppointmentModality | null {
+  return availableModalities[0] ?? null;
 }
 
 function normalizeStatus(value: string) {
@@ -221,9 +216,11 @@ export default function PatientAppointments() {
   const appointments = useMemo(() => data?.appointments ?? [], [data?.appointments]);
   const consultationSettings = data?.consultationSettings || null;
   const availabilitySettings = data?.availabilitySettings || null;
-  const allowsPresential = consultationSettings?.attendsPresential ?? true;
-  const allowsOnline = consultationSettings?.attendsOnline ?? true;
-  const allowsChoice = allowsPresential && allowsOnline;
+  const availableModalities = useMemo(
+    () => getAvailableModalities(consultationSettings?.consultationModality ?? null),
+    [consultationSettings?.consultationModality],
+  );
+  const allowsChoice = availableModalities.length > 1;
   const requestedConsultaId = searchParams.get("consultaId")?.trim() || "";
   const requestSchedule = useMemo(
     () => availabilitySettings?.schedule ?? getDefaultWorkingHours(),
@@ -318,6 +315,14 @@ export default function PatientAppointments() {
   useEffect(() => {
     if (!isRequestOpen) return;
 
+    if (!requestModality || !availableModalities.includes(requestModality)) {
+      setRequestModality(getInitialRequestModality(availableModalities));
+    }
+  }, [availableModalities, isRequestOpen, requestModality]);
+
+  useEffect(() => {
+    if (!isRequestOpen) return;
+
     if (!isRequestDayActive) {
       setRequestTime("");
       return;
@@ -346,7 +351,7 @@ export default function PatientAppointments() {
 
     setRequestDate(nextDateKey);
     setRequestTime(nextTimeOptions[0] || "");
-    setRequestModality(getInitialRequestModality(allowsPresential, allowsOnline));
+    setRequestModality(getInitialRequestModality(availableModalities));
     setRequestNotes("");
     setIsRequestOpen(true);
   }
@@ -365,10 +370,19 @@ export default function PatientAppointments() {
     });
 
     try {
+      const resolvedRequestModality =
+        requestModality && availableModalities.includes(requestModality)
+          ? requestModality
+          : getInitialRequestModality(availableModalities);
+
+      if (resolvedRequestModality !== requestModality) {
+        setRequestModality(resolvedRequestModality);
+      }
+
       const result = await requestPatientAppointment({
         requestedDate: requestDate,
         requestedTime: requestTime,
-        modality: requestModality,
+        modality: resolvedRequestModality,
         notes: requestNotes,
       });
 
@@ -676,8 +690,11 @@ export default function PatientAppointments() {
                     }
                     className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
                   >
-                    <option value="presencial">Presencial</option>
-                    <option value="online">Online</option>
+                    {availableModalities.map((modality) => (
+                      <option key={modality} value={modality}>
+                        {getConsultationModalityLabel(modality)}
+                      </option>
+                    ))}
                   </select>
                 ) : (
                   <div className="rounded-xl border border-input bg-muted/40 px-4 py-3 text-sm text-foreground">

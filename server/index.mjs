@@ -40,6 +40,7 @@ const CORS_ALLOWED_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 const CORS_ALLOWED_HEADERS = [
   "Content-Type",
   "Authorization",
+  "asaas-access-token",
   "x-asaas-access-token",
   "x-webhook-token",
 ].join(", ");

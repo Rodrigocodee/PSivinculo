@@ -544,7 +544,9 @@ async function ensureUsuariosPsychologistRecord(
   });
 }
 
-export async function getCurrentPsychologistContext(): Promise<CurrentPsychologistContext> {
+let currentPsychologistContextRequest: Promise<CurrentPsychologistContext> | null = null;
+
+async function resolveCurrentPsychologistContext(): Promise<CurrentPsychologistContext> {
   const user = await getAuthenticatedUser();
   const primaryRecord = await findCurrentPsychologistRecord(user);
   const metadata = (user?.user_metadata || {}) as Record<string, unknown>;
@@ -570,6 +572,16 @@ export async function getCurrentPsychologistContext(): Promise<CurrentPsychologi
       provisionalPsychologistId,
     clinicId: pickString(usuariosRow, ["clinica_id"]) || provisionalClinicId,
   };
+}
+
+export async function getCurrentPsychologistContext(): Promise<CurrentPsychologistContext> {
+  if (!currentPsychologistContextRequest) {
+    currentPsychologistContextRequest = resolveCurrentPsychologistContext().finally(() => {
+      currentPsychologistContextRequest = null;
+    });
+  }
+
+  return currentPsychologistContextRequest;
 }
 
 export async function getCurrentPsychologistProfile(): Promise<CurrentPsychologistProfile> {
