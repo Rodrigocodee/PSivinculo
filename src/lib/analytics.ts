@@ -23,6 +23,8 @@ declare global {
 
 let isInitialized = false;
 let lastTrackedPath = "";
+let isScriptLoaded = false;
+let pendingPageViews: Array<Record<string, string>> = [];
 
 function canUseAnalytics() {
   return Boolean(GA_MEASUREMENT_ID) && typeof window !== "undefined" && typeof document !== "undefined";
@@ -35,10 +37,34 @@ function ensureGtag() {
   };
 }
 
+function sendPageView(params: Record<string, string>) {
+  window.gtag?.("event", "page_view", params);
+}
+
+function flushPendingPageView() {
+  if (!isScriptLoaded || pendingPageViews.length === 0) return;
+
+  const pageViews = pendingPageViews;
+  pendingPageViews = [];
+  pageViews.forEach((params) => sendPageView(params));
+}
+
 function isLikelyIdentifier(segment: string) {
+  const decodedSegment = (() => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  })();
+  const digitsOnly = decodedSegment.replace(/\D/g, "");
+
   return (
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(segment) ||
-    /^[A-Za-z0-9_-]{20,}$/.test(segment)
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decodedSegment) ||
+    /^[A-Za-z0-9_-]{20,}$/.test(decodedSegment) ||
+    /^[^\s/@]+@[^\s/@]+\.[^\s/@]+$/.test(decodedSegment) ||
+    digitsOnly.length === 11 ||
+    /^crp[-_\s]?\d{1,2}[-_\s]?\d{3,8}$/i.test(decodedSegment)
   );
 }
 
@@ -70,7 +96,13 @@ export function initializeAnalytics() {
     script.id = GA_SCRIPT_ID;
     script.async = true;
     script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(GA_MEASUREMENT_ID)}`;
+    script.onload = () => {
+      isScriptLoaded = true;
+      flushPendingPageView();
+    };
     document.head.appendChild(script);
+  } else {
+    isScriptLoaded = true;
   }
 
   window.gtag?.("js", new Date());
@@ -91,10 +123,13 @@ export function trackPageView(pathname: string) {
   if (pagePath === lastTrackedPath) return;
 
   lastTrackedPath = pagePath;
-  window.gtag?.("event", "page_view", {
+  pendingPageViews.push({
     page_path: pagePath,
     page_location: `${window.location.origin}${pagePath}`,
-    page_title: "PSIVINCULO",
+    page_title: "Psivínculo",
   });
-}
 
+  if (isScriptLoaded) {
+    flushPendingPageView();
+  }
+}
