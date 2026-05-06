@@ -14,6 +14,12 @@ type GtagCommand = [
   params?: Record<string, unknown>,
 ];
 
+type PageViewParams = {
+  page_path: string;
+  page_location: string;
+  page_title: string;
+};
+
 declare global {
   interface Window {
     dataLayer?: GtagCommand[];
@@ -23,26 +29,30 @@ declare global {
 
 let isInitialized = false;
 let lastTrackedPath = "";
-let isScriptLoaded = false;
-let pendingPageViews: Array<Record<string, string>> = [];
+let canSendPageViewsImmediately = false;
+let pendingPageViews: PageViewParams[] = [];
 
 function canUseAnalytics() {
   return Boolean(GA_MEASUREMENT_ID) && typeof window !== "undefined" && typeof document !== "undefined";
 }
 
 function ensureGtag() {
+  const hadExistingGtag = typeof window.gtag === "function";
+
   window.dataLayer = window.dataLayer || [];
   window.gtag = window.gtag || function gtag(...args: GtagCommand) {
     window.dataLayer?.push(args);
   };
+
+  return hadExistingGtag;
 }
 
-function sendPageView(params: Record<string, string>) {
+function sendPageView(params: PageViewParams) {
   window.gtag?.("event", "page_view", params);
 }
 
 function flushPendingPageView() {
-  if (!isScriptLoaded || pendingPageViews.length === 0) return;
+  if (!canSendPageViewsImmediately || pendingPageViews.length === 0) return;
 
   const pageViews = pendingPageViews;
   pendingPageViews = [];
@@ -89,7 +99,7 @@ export function sanitizeAnalyticsPath(pathname: string) {
 export function initializeAnalytics() {
   if (!canUseAnalytics() || isInitialized) return;
 
-  ensureGtag();
+  const hadExistingGtag = ensureGtag();
 
   if (!document.getElementById(GA_SCRIPT_ID)) {
     const script = document.createElement("script");
@@ -97,12 +107,16 @@ export function initializeAnalytics() {
     script.async = true;
     script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(GA_MEASUREMENT_ID)}`;
     script.onload = () => {
-      isScriptLoaded = true;
+      canSendPageViewsImmediately = true;
       flushPendingPageView();
     };
     document.head.appendChild(script);
   } else {
-    isScriptLoaded = true;
+    canSendPageViewsImmediately = true;
+  }
+
+  if (hadExistingGtag) {
+    canSendPageViewsImmediately = true;
   }
 
   window.gtag?.("js", new Date());
@@ -126,10 +140,10 @@ export function trackPageView(pathname: string) {
   pendingPageViews.push({
     page_path: pagePath,
     page_location: `${window.location.origin}${pagePath}`,
-    page_title: "Psivínculo",
+    page_title: document.title,
   });
 
-  if (isScriptLoaded) {
+  if (canSendPageViewsImmediately) {
     flushPendingPageView();
   }
 }
