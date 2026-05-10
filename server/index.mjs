@@ -23,6 +23,7 @@ import {
 } from "./consultations.mjs";
 import { sendConsultationTestEmail } from "./email.mjs";
 import { HttpError } from "./errors.mjs";
+import { sendManualPatientRegistrationEmailForPatient } from "./patient-registration-email.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -449,6 +450,25 @@ async function handleEmailTestApiRequest(request, response, pathname) {
   return true;
 }
 
+async function handlePatientManualRegistrationEmailApiRequest(request, response, pathname) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await sendManualPatientRegistrationEmailForPatient(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      email: result,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "patient_manual_registration_email_failed");
+  }
+
+  return true;
+}
+
 async function handleConsultaRespondRequestApiRequest(request, response, pathname) {
   try {
     const payload = await readJsonBody(request);
@@ -652,6 +672,16 @@ async function handleApiRequest(request, response, pathname) {
     }
 
     return handleEmailTestApiRequest(request, response, pathname);
+  }
+
+  if (pathname === "/api/pacientes/manual-registration-email") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para enviar o e-mail do cadastro manual.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handlePatientManualRegistrationEmailApiRequest(request, response, pathname);
   }
 
   if (pathname === "/api/consultas/respond-request") {

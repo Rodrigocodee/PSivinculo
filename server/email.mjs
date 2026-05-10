@@ -4,6 +4,7 @@ import { HttpError } from "./errors.mjs";
 const DEFAULT_EMAIL_FROM = "Psivinculo <onboarding@resend.dev>";
 const DEFAULT_CONSULTATION_AREA_PATH = "/paciente/agendamentos";
 const DEFAULT_PSYCHOLOGIST_CONSULTATION_AREA_PATH = "/psi/agenda";
+const DEFAULT_PATIENT_REGISTRATION_AREA_PATH = "/cadastro/paciente";
 const DEFAULT_CONSULTATION_TIME_ZONE = "America/Sao_Paulo";
 
 let cachedResendClient = null;
@@ -514,6 +515,39 @@ export async function sendConsultationTestEmail(input, options = {}) {
       ctaUrl: baseUrl,
       footerNote:
         "A base ja esta pronta para os fluxos de confirmacao, reagendamento e lembretes de consulta.",
+    },
+    options,
+  );
+}
+
+export async function sendManualPatientRegistrationEmail(input, options = {}) {
+  const normalizedInput = isRecord(input) ? input : {};
+  const patientName = normalizeString(normalizedInput.patientName) || "Paciente";
+  const psychologistName = normalizeString(normalizedInput.psychologistName) || "seu psicologo";
+  const inviteUrl =
+    normalizeString(normalizedInput.inviteUrl) ||
+    `${normalizeString(options.baseUrl) || "http://localhost:8080"}${DEFAULT_PATIENT_REGISTRATION_AREA_PATH}`;
+
+  return sendConsultationEmail(
+    {
+      to: normalizedInput.to,
+      event: "paciente_cadastro_manual",
+      subject:
+        normalizeString(normalizedInput.subject) ||
+        "Seu psicologo cadastrou voce no Psivinculo",
+      title: "Seu cadastro foi iniciado",
+      intro:
+        normalizeString(normalizedInput.intro) ||
+        `${patientName}, ${psychologistName} cadastrou seus dados no Psivinculo. Para criar seu acesso de paciente, abra o link abaixo e conclua o cadastro.`,
+      details: [
+        { label: "Paciente", value: patientName },
+        { label: "Profissional", value: psychologistName },
+      ],
+      ctaLabel: "Criar acesso do paciente",
+      ctaUrl: inviteUrl,
+      footerNote:
+        normalizeString(normalizedInput.footerNote) ||
+        "Se voce nao esperava este e-mail, entre em contato diretamente com o profissional responsavel antes de criar seu acesso.",
     },
     options,
   );

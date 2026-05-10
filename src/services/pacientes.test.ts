@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type MutableRecord = Record<string, unknown>;
 
 const mocks = vi.hoisted(() => {
   let updatedPayload: MutableRecord | null = null;
   let insertedPayload: MutableRecord[] | null = null;
+  let insertedResponse: MutableRecord[] | null = null;
   let updateFilters: Array<{ column: string; value: string | null }> = [];
   let scope = {
     userId: "auth-psi-1",
@@ -31,6 +32,13 @@ const mocks = vi.hoisted(() => {
   };
 
   const getPsychologistServiceScope = vi.fn(async () => scope);
+  const getSession = vi.fn(async () => ({
+    data: {
+      session: {
+        access_token: "token-psi-1",
+      },
+    },
+  }));
 
   const from = vi.fn((table: string) => {
     if (table !== "pacientes") {
@@ -40,10 +48,14 @@ const mocks = vi.hoisted(() => {
     return {
       insert: vi.fn((payload: MutableRecord[]) => {
         insertedPayload = payload;
+        insertedResponse = payload.map((row, index) => ({
+          id: `paciente-criado-${index + 1}`,
+          ...row,
+        }));
 
         return {
           select: vi.fn(async () => ({
-            data: payload,
+            data: insertedResponse,
             error: null,
           })),
         };
@@ -83,6 +95,7 @@ const mocks = vi.hoisted(() => {
     reset() {
       updatedPayload = null;
       insertedPayload = null;
+      insertedResponse = null;
       updateFilters = [];
       scope = {
         userId: "auth-psi-1",
@@ -109,6 +122,7 @@ const mocks = vi.hoisted(() => {
       };
       from.mockClear();
       getPsychologistServiceScope.mockClear();
+      getSession.mockClear();
     },
     getUpdatedPayload() {
       return updatedPayload;
@@ -116,6 +130,7 @@ const mocks = vi.hoisted(() => {
     getInsertedPayload() {
       return insertedPayload;
     },
+    getSession,
     getUpdateFilters() {
       return updateFilters;
     },
@@ -130,6 +145,9 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/lib/supabase", () => ({
   supabase: {
+    auth: {
+      getSession: mocks.getSession,
+    },
     from: mocks.from,
   },
 }));
@@ -142,8 +160,28 @@ import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard
 import { cadastrarPaciente, salvarLinksSalaOnlinePaciente } from "@/services/pacientes";
 
 describe("pacientes.salvarLinksSalaOnlinePaciente", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     mocks.reset();
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        success: true,
+        email: {
+          attempted: true,
+          sent: true,
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    consoleErrorSpy.mockRestore();
   });
 
   it("saves the private room links in the specific patient record", async () => {
@@ -178,6 +216,113 @@ describe("pacientes.salvarLinksSalaOnlinePaciente", () => {
         email: "ana.preview@example.com",
       }),
     ).rejects.toThrow(PREVIEW_FEATURE_LOCK_MESSAGE);
+
+    expect(mocks.getInsertedPayload()).toBeNull();
+  });
+
+  it("creates a patient linked to the authenticated psychologist without requiring a clinic", async () => {
+    mocks.setScope({
+      psychologistId: "psi-2",
+      psychologistIds: ["psi-2", "auth-psi-2"],
+      clinicId: null,
+    });
+
+    await cadastrarPaciente({
+      nome: "  Ana Individual  ",
+      email: " ANA.INDIVIDUAL@EXAMPLE.COM ",
+      telefone: "(11) 98765-4321",
+      cpf: "123.456.789-01",
+    });
+
+    expect(mocks.getInsertedPayload()).toEqual([
+      expect.objectContaining({
+        clinica_id: null,
+        psicologo_id: "psi-2",
+        nome: "Ana Individual",
+        email: "ana.individual@example.com",
+        telefone: "11987654321",
+        cpf: "12345678901",
+        ativo: true,
+      }),
+    ]);
+  });
+
+  it("sends the manual registration email when the patient has a valid email", async () => {
+    await cadastrarPaciente({
+      nome: "Ana Email",
+      email: "ana.email@example.com",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/pacientes/manual-registration-email",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer token-psi-1",
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({ patientId: "paciente-criado-1" }),
+      }),
+    );
+  });
+
+  it("does not try to send the manual registration email when the patient has no email", async () => {
+    await cadastrarPaciente({
+      nome: "Ana Sem Email",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the patient creation successful when the manual registration email fails", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("Resend unavailable"));
+
+    const result = await cadastrarPaciente({
+      nome: "Ana Email Falha",
+      email: "ana.falha@example.com",
+    });
+
+    expect(result?.[0]).toEqual(
+      expect.objectContaining({
+        id: "paciente-criado-1",
+        nome: "Ana Email Falha",
+        email: "ana.falha@example.com",
+      }),
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "Erro ao enviar e-mail do cadastro manual do paciente:",
+      expect.any(Error),
+    );
+  });
+
+  it("keeps the clinic link when the authenticated psychologist belongs to a clinic", async () => {
+    await cadastrarPaciente({
+      nome: "Ana Clinica",
+      email: "ana.clinica@example.com",
+    });
+
+    expect(mocks.getInsertedPayload()).toEqual([
+      expect.objectContaining({
+        clinica_id: "clinic-1",
+        psicologo_id: "psi-1",
+        nome: "Ana Clinica",
+        email: "ana.clinica@example.com",
+        ativo: true,
+      }),
+    ]);
+  });
+
+  it("rejects explicit links to another psychologist", async () => {
+    await expect(
+      cadastrarPaciente(
+        {
+          nome: "Ana Outro Psi",
+        },
+        {
+          psychologistId: "outro-psi",
+        },
+      ),
+    ).rejects.toThrow("Nao foi possivel cadastrar paciente para outro psicologo.");
 
     expect(mocks.getInsertedPayload()).toBeNull();
   });

@@ -1,7 +1,12 @@
-import { normalizeEmail, normalizePhoneDigits } from "@/services/auth";
+import { isValidEmail, normalizeEmail, normalizePhoneDigits } from "@/services/auth";
 import { normalizeOnlineSessionLinkInput } from "@/services/onlineSessionLinks";
 import { assertProfessionalAccessFromScope } from "@/services/professionalAccessGuard";
 import { getPsychologistServiceScope } from "@/services/psychologistScope";
+import {
+    buildAuthenticatedJsonRequestHeaders,
+    buildServerApiUrl,
+    readServerJsonResponse,
+} from "@/services/serverApi";
 import { supabase } from "../lib/supabase";
 
 const PATIENT_ROOM_LINKS_SELECT =
@@ -30,6 +35,11 @@ export type SalaOnlinePacienteInput = {
     psychologistLink?: string | null;
 };
 
+type PacienteCriado = {
+    id?: string | null;
+    email?: string | null;
+};
+
 export function normalizeCpfDigits(value: string) {
     return value.replace(/\D/g, "").slice(0, 11);
 }
@@ -38,18 +48,46 @@ async function resolveVinculoPaciente(vinculo?: VinculoPaciente) {
     const explicitClinicId = vinculo?.clinicId?.trim() || null;
     const explicitPsychologistId = vinculo?.psychologistId?.trim() || null;
     const scope = await getPsychologistServiceScope();
-    const clinicId = explicitClinicId || scope?.clinicId;
-    const psychologistId = explicitPsychologistId || scope?.psychologistId;
+    const clinicId = explicitClinicId || scope.clinicId;
+    const psychologistId = explicitPsychologistId || scope.psychologistId;
 
-    if (!clinicId) {
-        throw new Error("Nao foi possivel determinar a clinica do psicologo autenticado.");
+    if (!psychologistId) {
+        throw new Error("Nao foi possivel determinar o psicologo autenticado.");
+    }
+
+    if (explicitPsychologistId && !scope.psychologistIds.includes(explicitPsychologistId)) {
+        throw new Error("Nao foi possivel cadastrar paciente para outro psicologo.");
+    }
+
+    if (explicitClinicId && explicitClinicId !== scope.clinicId) {
+        throw new Error("Nao foi possivel cadastrar paciente para outra clinica.");
     }
 
     return {
-        clinicId,
+        clinicId: clinicId || null,
         psychologistId,
         hasProfessionalAccess: scope.hasProfessionalAccess,
     };
+}
+
+async function enviarEmailCadastroManualPaciente(paciente: PacienteCriado | null | undefined) {
+    const patientId = paciente?.id?.trim();
+    const email = normalizeEmail(paciente?.email || "");
+
+    if (!patientId || !email || !isValidEmail(email)) {
+        return null;
+    }
+
+    const response = await fetch(buildServerApiUrl("/api/pacientes/manual-registration-email"), {
+        method: "POST",
+        headers: await buildAuthenticatedJsonRequestHeaders(),
+        body: JSON.stringify({ patientId }),
+    });
+
+    return readServerJsonResponse<{ success: true; email: unknown }>(
+        response,
+        "Nao foi possivel enviar o e-mail de cadastro do paciente.",
+    );
 }
 
 export async function cadastrarPaciente(paciente: NovoPaciente, vinculo?: VinculoPaciente) {
@@ -75,6 +113,13 @@ export async function cadastrarPaciente(paciente: NovoPaciente, vinculo?: Vincul
         .select();
 
     if (error) throw error;
+
+    try {
+        await enviarEmailCadastroManualPaciente(data?.[0] as PacienteCriado | null | undefined);
+    } catch (emailError) {
+        console.error("Erro ao enviar e-mail do cadastro manual do paciente:", emailError);
+    }
+
     return data;
 }
 
