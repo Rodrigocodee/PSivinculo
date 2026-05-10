@@ -17,6 +17,7 @@ import { handleConsultationAsaasWebhook } from "./consultation-payment-webhook.m
 import { createConsultationPayment } from "./consultation-payments.mjs";
 import { processConsultationReminders } from "./consultation-reminders.mjs";
 import {
+  createConsultaAndNotify,
   respondConsultaCounterproposalAndNotify,
   respondConsultaRequestAndNotify,
   updateConsultaAndNotify,
@@ -490,6 +491,27 @@ async function handleConsultaRespondRequestApiRequest(request, response, pathnam
   return true;
 }
 
+async function handleConsultaCreateApiRequest(request, response, pathname) {
+  try {
+    const payload = await readJsonBody(request);
+    const result = await createConsultaAndNotify(payload, {
+      env: process.env,
+      requestHeaders: request.headers,
+    });
+
+    sendJsonSafely(response, 200, {
+      success: true,
+      consultation: result.consultation,
+      email: result.email,
+      payment: result.payment ?? null,
+    });
+  } catch (error) {
+    sendErrorJson(response, pathname, request, error, "consulta_create_failed");
+  }
+
+  return true;
+}
+
 async function handleConsultaUpdateApiRequest(request, response, pathname) {
   try {
     const payload = await readJsonBody(request);
@@ -692,6 +714,16 @@ async function handleApiRequest(request, response, pathname) {
     }
 
     return handleConsultaRespondRequestApiRequest(request, response, pathname);
+  }
+
+  if (pathname === "/api/consultas/create") {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Use POST para criar a consulta.", {
+        code: "METHOD_NOT_ALLOWED",
+      });
+    }
+
+    return handleConsultaCreateApiRequest(request, response, pathname);
   }
 
   if (pathname === "/api/consultas/update") {

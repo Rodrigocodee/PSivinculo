@@ -1,6 +1,7 @@
 import {
   sendPatientConsultationConfirmationEmail,
   sendPatientConsultationRescheduleEmail,
+  sendPatientConsultationScheduledEmail,
 } from "./email.mjs";
 import { createConsultationPayment } from "./consultation-payments.mjs";
 import { HttpError } from "./errors.mjs";
@@ -25,6 +26,18 @@ const CONSULTATION_UPDATE_FIELDS = [
   "duracao_consulta_min",
   "local_presencial",
 ];
+const CONSULTATION_CREATE_FIELDS = [
+  "paciente_id",
+  "data_consulta",
+  "status",
+  "observacoes",
+  "modalidade_consulta",
+  "psicologo_id",
+  "clinica_id",
+  "valor_consulta",
+  "duracao_consulta_min",
+  "local_presencial",
+];
 const CONSULTATION_SCHEDULE_TERMINAL_STATUSES = new Set([
   "cancelada",
   "recusada",
@@ -32,6 +45,7 @@ const CONSULTATION_SCHEDULE_TERMINAL_STATUSES = new Set([
   "faltou",
   "solicitada",
 ]);
+const CONSULTATION_SCHEDULED_EMAIL_EVENT = "scheduled_patient";
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -198,6 +212,19 @@ function sanitizeConsultaUpdates(input) {
   }
 
   return updates;
+}
+
+function sanitizeConsultaCreateInput(input) {
+  const source = isRecord(input) ? input : {};
+  const insert = {};
+
+  for (const field of CONSULTATION_CREATE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(source, field) && source[field] !== undefined) {
+      insert[field] = source[field];
+    }
+  }
+
+  return insert;
 }
 
 function buildPublicBaseUrl(requestHeaders, env) {
@@ -375,7 +402,7 @@ async function loadConsultationEmailContext(consultationId, env) {
   const client = getServerSupabaseClient(env);
   const { data: consultation, error: consultationError } = await client
     .from("consultas")
-        .select(
+    .select(
       "id, paciente_id, psicologo_id, data_consulta, data_consulta_solicitada_original, status, modalidade_consulta, local_presencial, valor_consulta",
     )
     .eq("id", consultationId)
@@ -541,6 +568,293 @@ function logConsultationConfirmationEmailDiagnostic({
   });
 }
 
+function logConsultationScheduledEmailDiagnostic({
+  route,
+  consultation,
+  emailContext = null,
+  attemptedSend = false,
+  sendSuccess = false,
+  skipReason = null,
+}) {
+  const patientEmail =
+    pickString(emailContext || null, ["patientEmail"]) ||
+    normalizeEmail(pickString(consultation, ["email", "paciente_email", "email_paciente"]));
+
+  console.info("[Psivinculo][consultation-email][scheduled_diagnostic]", {
+    route: route || null,
+    consultation_id: pickString(consultation, ["id"]) || null,
+    paciente_id:
+      pickString(emailContext || null, ["patientId"]) ||
+      pickString(consultation, ["paciente_id"]) ||
+      null,
+    psicologo_id:
+      pickString(emailContext || null, ["psychologistId"]) ||
+      pickString(consultation, ["psicologo_id"]) ||
+      null,
+    status: normalizeString(consultation?.status) || null,
+    found_patient:
+      emailContext && Object.prototype.hasOwnProperty.call(emailContext, "patientFound")
+        ? Boolean(emailContext.patientFound)
+        : false,
+    has_patient_email: isValidEmail(patientEmail),
+    patient_email_masked: maskEmailForLogs(patientEmail),
+    attempted_send: Boolean(attemptedSend),
+    send_success: Boolean(sendSuccess),
+    skip_reason: skipReason,
+  });
+}
+
+async function hasSentConsultationEmailEvent(client, consultationId, eventType, recipientEmail) {
+  const normalizedConsultationId = normalizeString(consultationId);
+  const normalizedEventType = normalizeString(eventType);
+  const normalizedRecipientEmail = normalizeEmail(recipientEmail);
+
+  if (!normalizedConsultationId || !normalizedEventType || !normalizedRecipientEmail) {
+    return false;
+  }
+
+  try {
+    const { data, error } = await client
+      .from("consultation_email_events")
+      .select("id")
+      .eq("consulta_id", normalizedConsultationId)
+      .eq("tipo_evento", normalizedEventType)
+      .eq("destinatario_email", normalizedRecipientEmail)
+      .eq("status", "sent")
+      .maybeSingle();
+
+    if (error) {
+      console.warn("[Psivinculo][consultation-email][event_lookup_failed]", {
+        consultationId: normalizedConsultationId,
+        event: normalizedEventType,
+        code: normalizeString(error.code) || "EVENT_LOOKUP_FAILED",
+        message: normalizeString(error.message) || "Event lookup failed",
+      });
+      return false;
+    }
+
+    return Boolean(data);
+  } catch (error) {
+    console.warn("[Psivinculo][consultation-email][event_lookup_failed]", {
+      consultationId: normalizedConsultationId,
+      event: normalizedEventType,
+      message: error instanceof Error ? error.message : "Unknown event lookup error",
+    });
+    return false;
+  }
+}
+
+async function recordConsultationEmailEvent(client, {
+  consultationId,
+  eventType,
+  recipientEmail,
+  status,
+  errorMessage = null,
+}) {
+  const normalizedConsultationId = normalizeString(consultationId);
+  const normalizedEventType = normalizeString(eventType);
+  const normalizedRecipientEmail = normalizeEmail(recipientEmail);
+
+  if (!normalizedConsultationId || !normalizedEventType || !normalizedRecipientEmail) {
+    return;
+  }
+
+  try {
+    const payload = {
+      consulta_id: normalizedConsultationId,
+      tipo_evento: normalizedEventType,
+      destinatario_email: normalizedRecipientEmail,
+      status,
+      enviado_em: status === "sent" ? new Date().toISOString() : null,
+      erro: errorMessage,
+    };
+    const { error } = await client
+      .from("consultation_email_events")
+      .insert([payload]);
+
+    if (error) {
+      console.warn("[Psivinculo][consultation-email][event_record_failed]", {
+        consultationId: normalizedConsultationId,
+        event: normalizedEventType,
+        status,
+        code: normalizeString(error.code) || "EVENT_RECORD_FAILED",
+        message: normalizeString(error.message) || "Event record failed",
+      });
+    }
+  } catch (error) {
+    console.warn("[Psivinculo][consultation-email][event_record_failed]", {
+      consultationId: normalizedConsultationId,
+      event: normalizedEventType,
+      status,
+      message: error instanceof Error ? error.message : "Unknown event record error",
+    });
+  }
+}
+
+export async function sendConsultationScheduledEmail({
+  consultationId,
+  consultation = null,
+  route,
+  env,
+  requestHeaders,
+}) {
+  const currentConsultationId = normalizeString(consultationId);
+
+  if (!currentConsultationId) {
+    return {
+      attempted: false,
+      sent: false,
+      event: "scheduled",
+      skippedReason: "consultation_id_missing",
+    };
+  }
+
+  const serviceClient = getServerSupabaseClient(env);
+  const baseUrl = buildPublicBaseUrl(requestHeaders, env);
+  const emailContext = await loadConsultationEmailContext(currentConsultationId, env);
+  emailContext.patientEmail =
+    emailContext.patientEmail ||
+    normalizeEmail(pickString(consultation, ["email", "paciente_email", "email_paciente"]));
+
+  const currentConsultation = isRecord(consultation) ? consultation : {
+    id: emailContext.consultationId,
+    paciente_id: emailContext.patientId,
+    psicologo_id: emailContext.psychologistId,
+    status: emailContext.status,
+  };
+
+  if (!isValidEmail(emailContext.patientEmail)) {
+    logConsultationScheduledEmailDiagnostic({
+      route,
+      consultation: currentConsultation,
+      emailContext,
+      attemptedSend: false,
+      sendSuccess: false,
+      skipReason: "missing_patient_email",
+    });
+    console.warn("[Psivinculo][consultation-email][scheduled_skipped_missing_patient_email]", {
+      route,
+      consultationId: currentConsultationId,
+      patientId: emailContext.patientId || null,
+      psychologistId: emailContext.psychologistId || null,
+    });
+
+    return {
+      attempted: false,
+      sent: false,
+      event: "scheduled",
+      skippedReason: "missing_patient_email",
+    };
+  }
+
+  const alreadySent = await hasSentConsultationEmailEvent(
+    serviceClient,
+    currentConsultationId,
+    CONSULTATION_SCHEDULED_EMAIL_EVENT,
+    emailContext.patientEmail,
+  );
+
+  if (alreadySent) {
+    logConsultationScheduledEmailDiagnostic({
+      route,
+      consultation: currentConsultation,
+      emailContext,
+      attemptedSend: false,
+      sendSuccess: false,
+      skipReason: "already_sent",
+    });
+
+    return {
+      attempted: false,
+      sent: false,
+      event: "scheduled",
+      skippedReason: "already_sent",
+    };
+  }
+
+  const emailInput = {
+    to: emailContext.patientEmail,
+    consultationId: emailContext.consultationId,
+    patientName: emailContext.patientName,
+    psychologistName: emailContext.psychologistName,
+    appointmentDateTime: emailContext.appointmentDateTime,
+    appointmentModality: emailContext.appointmentModality,
+    presentialLocation: emailContext.presentialLocation,
+    roomLink: emailContext.roomLink,
+    amount: emailContext.amount,
+    status: emailContext.status,
+  };
+
+  try {
+    const result = await sendPatientConsultationScheduledEmail(emailInput, {
+      env,
+      baseUrl,
+    });
+
+    await recordConsultationEmailEvent(serviceClient, {
+      consultationId: currentConsultationId,
+      eventType: CONSULTATION_SCHEDULED_EMAIL_EVENT,
+      recipientEmail: emailContext.patientEmail,
+      status: "sent",
+    });
+    logConsultationScheduledEmailDiagnostic({
+      route,
+      consultation: currentConsultation,
+      emailContext,
+      attemptedSend: true,
+      sendSuccess: true,
+      skipReason: null,
+    });
+    console.info("[Psivinculo][consultation-email][scheduled_sent]", {
+      route,
+      consultationId: currentConsultationId,
+      patientId: emailContext.patientId || null,
+      psychologistId: emailContext.psychologistId || null,
+      patientEmail: maskEmailForLogs(emailContext.patientEmail),
+      emailId: normalizeString(result?.emailId) || null,
+    });
+
+    return {
+      attempted: true,
+      sent: true,
+      event: "scheduled",
+      emailId: normalizeString(result?.emailId) || null,
+    };
+  } catch (error) {
+    await recordConsultationEmailEvent(serviceClient, {
+      consultationId: currentConsultationId,
+      eventType: CONSULTATION_SCHEDULED_EMAIL_EVENT,
+      recipientEmail: emailContext.patientEmail,
+      status: "failed",
+      errorMessage: error instanceof Error ? error.message : "Unknown email error",
+    });
+    logConsultationScheduledEmailDiagnostic({
+      route,
+      consultation: currentConsultation,
+      emailContext,
+      attemptedSend: true,
+      sendSuccess: false,
+      skipReason: "email_send_failed",
+    });
+    console.error("[Psivinculo][consultation-email][scheduled_send_failed]", {
+      route,
+      consultationId: currentConsultationId,
+      patientId: emailContext.patientId || null,
+      psychologistId: emailContext.psychologistId || null,
+      patientEmail: maskEmailForLogs(emailContext.patientEmail),
+      code: error instanceof HttpError ? error.code : "EMAIL_SEND_FAILED",
+      message: error instanceof Error ? error.message : "Unknown email error",
+    });
+
+    return {
+      attempted: true,
+      sent: false,
+      event: "scheduled",
+      skippedReason: "email_send_failed",
+    };
+  }
+}
+
 async function maybeSendConsultationEmailNotification({
   previousConsultation,
   currentConsultation,
@@ -600,6 +914,33 @@ async function maybeSendConsultationEmailNotification({
       emailContext,
       event,
     });
+  }
+
+  if (
+    shouldSendConfirmation &&
+    isValidEmail(emailContext.patientEmail) &&
+    (await hasSentConsultationEmailEvent(
+      getServerSupabaseClient(env),
+      currentConsultationId,
+      CONSULTATION_SCHEDULED_EMAIL_EVENT,
+      emailContext.patientEmail,
+    ))
+  ) {
+    logConsultationConfirmationEmailDiagnostic({
+      label: "skipped_scheduled_already_sent_diagnostic",
+      previousConsultation,
+      currentConsultation,
+      emailContext,
+      event,
+      skippedReason: "scheduled_email_already_sent",
+    });
+
+    return {
+      attempted: false,
+      sent: false,
+      event,
+      skippedReason: "scheduled_email_already_sent",
+    };
   }
 
   if (emailContext.notificationPreferences?.patient_confirmation === false) {
@@ -788,6 +1129,65 @@ async function maybeCreateConsultationPaymentAfterConfirmation({
           : "CONSULTATION_PAYMENT_CREATE_FAILED",
     };
   }
+}
+
+export async function createConsultaAndNotify(payload, options = {}) {
+  const env = options.env || process.env;
+  const requestHeaders = options.requestHeaders || {};
+  const insert = sanitizeConsultaCreateInput(payload?.consulta || payload);
+
+  if (!normalizeString(insert.paciente_id)) {
+    throw new HttpError(400, "Informe o paciente da consulta.", {
+      code: "CONSULTATION_PATIENT_REQUIRED",
+    });
+  }
+
+  if (!normalizeString(insert.data_consulta)) {
+    throw new HttpError(400, "Informe a data da consulta.", {
+      code: "CONSULTATION_DATE_REQUIRED",
+    });
+  }
+
+  if (!normalizeString(insert.status)) {
+    insert.status = "pendente";
+  }
+
+  const { authenticatedUser, userClient } = await resolveAuthenticatedRequestContext(requestHeaders, env);
+  await assertProfessionalAccessForAuthenticatedUser(
+    getServerSupabaseClient(env),
+    authenticatedUser,
+  );
+
+  const { data, error } = await userClient
+    .from("consultas")
+    .insert([insert])
+    .select("*")
+    .single();
+
+  if (error) {
+    throw toSupabaseHttpError(error, "Nao foi possivel criar a consulta agora.");
+  }
+
+  if (!isRecord(data)) {
+    throw new HttpError(500, "A criacao nao retornou a consulta esperada.", {
+      code: "CONSULTATION_CREATE_EMPTY",
+    });
+  }
+
+  const consultation = data;
+  const email = await sendConsultationScheduledEmail({
+    consultationId: pickString(consultation, ["id"]),
+    consultation,
+    route: "/api/consultas/create",
+    env,
+    requestHeaders,
+  });
+
+  return {
+    consultation,
+    email,
+    payment: null,
+  };
 }
 
 export async function respondConsultaRequestAndNotify(payload, options = {}) {

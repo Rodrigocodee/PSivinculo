@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const emailMocks = vi.hoisted(() => ({
   sendPatientConsultationConfirmationEmail: vi.fn(),
   sendPatientConsultationRescheduleEmail: vi.fn(),
+  sendPatientConsultationScheduledEmail: vi.fn(),
 }));
 
 const paymentMocks = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ const supabaseMocks = vi.hoisted(() => ({
 vi.mock("./email.mjs", () => ({
   sendPatientConsultationConfirmationEmail: emailMocks.sendPatientConsultationConfirmationEmail,
   sendPatientConsultationRescheduleEmail: emailMocks.sendPatientConsultationRescheduleEmail,
+  sendPatientConsultationScheduledEmail: emailMocks.sendPatientConsultationScheduledEmail,
 }));
 
 vi.mock("./consultation-payments.mjs", () => ({
@@ -36,7 +38,7 @@ vi.mock("./supabase.mjs", () => ({
   resolveSupabaseAuthUser: supabaseMocks.resolveSupabaseAuthUser,
 }));
 
-import { updateConsultaAndNotify } from "./consultations.mjs";
+import { createConsultaAndNotify, updateConsultaAndNotify } from "./consultations.mjs";
 import { PREVIEW_FEATURE_LOCK_MESSAGE } from "./professional-access.mjs";
 
 function createSelectQuery(rows) {
@@ -117,11 +119,48 @@ function createUpdateQuery(rows, updatePayload) {
   return query;
 }
 
+function createInsertQuery(rows, insertPayload) {
+  let shouldReturnSingle = false;
+  const insertedRows = (Array.isArray(insertPayload) ? insertPayload : [insertPayload]).map(
+    (row, index) => ({
+      id: row?.id || `inserted-${rows.length + index + 1}`,
+      ...row,
+    }),
+  );
+
+  const query = {
+    select() {
+      return query;
+    },
+    single() {
+      shouldReturnSingle = true;
+      return query;
+    },
+    maybeSingle() {
+      shouldReturnSingle = true;
+      return query;
+    },
+    then(resolve, reject) {
+      rows.push(...insertedRows.map((row) => ({ ...row })));
+      const selectedRows = insertedRows.map((row) => ({ ...row }));
+      const payload = {
+        data: shouldReturnSingle ? selectedRows[0] ?? null : selectedRows,
+        error: null,
+      };
+
+      return Promise.resolve(payload).then(resolve, reject);
+    },
+  };
+
+  return query;
+}
+
 function createMockClient(input) {
   const state = {
     consultas: input.consultas.map((row) => ({ ...row })),
     pacientes: input.pacientes.map((row) => ({ ...row })),
     usuarios: input.usuarios.map((row) => ({ ...row })),
+    consultation_email_events: (input.consultation_email_events ?? []).map((row) => ({ ...row })),
   };
 
   return {
@@ -140,6 +179,9 @@ function createMockClient(input) {
           update(payload) {
             return createUpdateQuery(state.consultas, payload);
           },
+          insert(payload) {
+            return createInsertQuery(state.consultas, payload);
+          },
         };
       }
 
@@ -149,6 +191,17 @@ function createMockClient(input) {
 
       if (tableName === "usuarios") {
         return createSelectQuery(state.usuarios);
+      }
+
+      if (tableName === "consultation_email_events") {
+        return {
+          select() {
+            return createSelectQuery(state.consultation_email_events);
+          },
+          insert(payload) {
+            return createInsertQuery(state.consultation_email_events, payload);
+          },
+        };
       }
 
       throw new Error(`Unhandled table in mock client: ${tableName}`);
@@ -164,6 +217,9 @@ describe("consultation notifications", () => {
     });
     emailMocks.sendPatientConsultationRescheduleEmail.mockResolvedValue({
       emailId: "email-2",
+    });
+    emailMocks.sendPatientConsultationScheduledEmail.mockResolvedValue({
+      emailId: "email-3",
     });
     paymentMocks.createConsultationPayment.mockResolvedValue({
       consultationId: "consulta-1",
@@ -707,5 +763,449 @@ describe("consultation notifications", () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it("sends a scheduled email when creating a consultation for a registered patient with email", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Criacao",
+          email: "ana.criacao@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          email: "camila@example.com",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    supabaseMocks.resolveSupabaseAuthUser.mockResolvedValue({
+      id: "auth-user-1",
+      email: "camila@example.com",
+      user_metadata: {
+        tipo_usuario: "psicologo",
+      },
+    });
+
+    const result = await createConsultaAndNotify(
+      {
+        consulta: {
+          id: "consulta-criada-1",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T09:00:00",
+          status: "pendente",
+          modalidade_consulta: "online",
+          valor_consulta: 200,
+        },
+      },
+      {
+        requestHeaders: {
+          authorization: "Bearer token-1",
+        },
+        env: {
+          APP_BASE_URL: "https://app.psivinculo.test",
+        },
+      },
+    );
+
+    expect(result.consultation.id).toBe("inserted-1");
+    expect(result.email).toEqual(
+      expect.objectContaining({
+        attempted: true,
+        sent: true,
+        event: "scheduled",
+      }),
+    );
+    expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "ana.criacao@example.com",
+        patientName: "Ana Criacao",
+        psychologistName: "Dra. Camila",
+        appointmentDateTime: "2026-05-12T09:00:00",
+        status: "pendente",
+      }),
+      expect.objectContaining({
+        baseUrl: "https://app.psivinculo.test",
+      }),
+    );
+    expect(client.state.consultation_email_events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          consulta_id: "inserted-1",
+          tipo_evento: "scheduled_patient",
+          destinatario_email: "ana.criacao@example.com",
+          status: "sent",
+        }),
+      ]),
+    );
+  });
+
+  it("sends a scheduled email to a patient without an Auth account when pacientes has email", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-sem-auth",
+          nome: "Paciente Sem Auth",
+          email: "sem.auth@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+
+    await createConsultaAndNotify(
+      {
+        consulta: {
+          id: "consulta-sem-auth",
+          paciente_id: "paciente-sem-auth",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T10:00:00",
+          status: "solicitada",
+        },
+      },
+      {
+        requestHeaders: {
+          authorization: "Bearer token-1",
+        },
+        env: {},
+      },
+    );
+
+    expect(client.auth.admin.getUserById).not.toHaveBeenCalled();
+    expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "sem.auth@example.com",
+        status: "solicitada",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("sends scheduled emails for requested and confirmed consultation creation statuses", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Status",
+          email: "ana.status@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+
+    await createConsultaAndNotify(
+      {
+        consulta: {
+          id: "consulta-solicitada",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T11:00:00",
+          status: "solicitada",
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+    await createConsultaAndNotify(
+      {
+        consulta: {
+          id: "consulta-confirmada",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T12:00:00",
+          status: "confirmada",
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenCalledTimes(2);
+    expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ status: "solicitada" }),
+      expect.any(Object),
+    );
+    expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ status: "confirmada" }),
+      expect.any(Object),
+    );
+  });
+
+  it("skips scheduled email when creating a consultation without patient email", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-sem-email",
+          nome: "Paciente Sem Email",
+          email: null,
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+
+    const result = await createConsultaAndNotify(
+      {
+        consulta: {
+          id: "consulta-sem-email",
+          paciente_id: "paciente-sem-email",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T13:00:00",
+          status: "pendente",
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.id).toBe("inserted-1");
+    expect(result.email).toEqual(
+      expect.objectContaining({
+        attempted: false,
+        sent: false,
+        event: "scheduled",
+        skippedReason: "missing_patient_email",
+      }),
+    );
+    expect(emailMocks.sendPatientConsultationScheduledEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps consultation created when scheduled email fails", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-email-falha",
+          nome: "Paciente Email Falha",
+          email: "falha@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    emailMocks.sendPatientConsultationScheduledEmail.mockRejectedValueOnce(
+      new Error("Resend unavailable"),
+    );
+
+    const result = await createConsultaAndNotify(
+      {
+        consulta: {
+          id: "consulta-email-falha",
+          paciente_id: "paciente-email-falha",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T14:00:00",
+          status: "pendente",
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.id).toBe("inserted-1");
+    expect(client.state.consultas).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "inserted-1",
+        }),
+      ]),
+    );
+    expect(result.email).toEqual(
+      expect.objectContaining({
+        attempted: true,
+        sent: false,
+        event: "scheduled",
+        skippedReason: "email_send_failed",
+      }),
+    );
+  });
+
+  it("does not duplicate scheduled email on simple consultation updates", async () => {
+    const client = createMockClient({
+      consultas: [
+        {
+          id: "consulta-notificada",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T15:00:00",
+          status: "pendente",
+          observacoes: null,
+        },
+      ],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Update",
+          email: "ana.update@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+      consultation_email_events: [
+        {
+          id: "evt-1",
+          consulta_id: "consulta-notificada",
+          tipo_evento: "scheduled_patient",
+          destinatario_email: "ana.update@example.com",
+          status: "sent",
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+
+    const result = await updateConsultaAndNotify(
+      {
+        consultaId: "consulta-notificada",
+        updates: {
+          observacoes: "Observacao atualizada",
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.email).toEqual(
+      expect.objectContaining({
+        attempted: false,
+        sent: false,
+        skippedReason: "not_applicable",
+      }),
+    );
+    expect(emailMocks.sendPatientConsultationScheduledEmail).not.toHaveBeenCalled();
+    expect(emailMocks.sendPatientConsultationConfirmationEmail).not.toHaveBeenCalled();
+  });
+
+  it("does not send immediate confirmation email when the scheduled email was already sent", async () => {
+    const client = createMockClient({
+      consultas: [
+        {
+          id: "consulta-ja-notificada",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T16:00:00",
+          status: "solicitada",
+        },
+      ],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Notificada",
+          email: "ana.notificada@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+      consultation_email_events: [
+        {
+          id: "evt-1",
+          consulta_id: "consulta-ja-notificada",
+          tipo_evento: "scheduled_patient",
+          destinatario_email: "ana.notificada@example.com",
+          status: "sent",
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+
+    const result = await updateConsultaAndNotify(
+      {
+        consultaId: "consulta-ja-notificada",
+        updates: {
+          status: "confirmada",
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.status).toBe("confirmada");
+    expect(result.email).toEqual(
+      expect.objectContaining({
+        attempted: false,
+        sent: false,
+        event: "confirmation",
+        skippedReason: "scheduled_email_already_sent",
+      }),
+    );
+    expect(emailMocks.sendPatientConsultationConfirmationEmail).not.toHaveBeenCalled();
   });
 });

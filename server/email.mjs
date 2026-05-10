@@ -234,6 +234,24 @@ function getConsultationModalityLabel(value) {
   return "A definir";
 }
 
+function getConsultationStatusLabel(value) {
+  const normalizedValue = normalizeString(value).toLowerCase();
+
+  const labels = {
+    solicitada: "Solicitada",
+    pendente: "Pendente",
+    confirmada: "Confirmada",
+    cancelada: "Cancelada",
+    recusada: "Recusada",
+    contraproposta: "Contraproposta",
+    realizada: "Realizada",
+    faltou: "Faltou",
+    reagendada: "Reagendada",
+  };
+
+  return labels[normalizedValue] || normalizeString(value) || "A definir";
+}
+
 function resolveConsultationCtaUrl(input, options = {}) {
   const explicitCtaUrl = normalizeString(input.ctaUrl);
   if (explicitCtaUrl) return explicitCtaUrl;
@@ -282,6 +300,10 @@ function buildConsultationEmailDetails(input, options = {}) {
   );
 
   details.push({ label: "Modalidade", value: modalityLabel });
+
+  if (options.includeStatus === true) {
+    details.push({ label: "Status", value: getConsultationStatusLabel(input.status) });
+  }
 
   if (roomLink) {
     details.push({
@@ -579,6 +601,36 @@ export async function sendPatientConsultationConfirmationEmail(input, options = 
         normalizeString(normalizedInput.intro) ||
         `${patientName}, sua consulta com ${psychologistName} foi confirmada para ${appointmentDateTime.fullLabel}.`,
       details: buildConsultationEmailDetails(normalizedInput),
+      ctaLabel: "Abrir agendamento",
+      ctaUrl: resolveConsultationCtaUrl(normalizedInput, options),
+      footerNote:
+        normalizeString(normalizedInput.footerNote) ||
+        "Em caso de duvidas sobre a consulta, entre em contato diretamente com o seu psicologo.",
+    },
+    options,
+  );
+}
+
+export async function sendPatientConsultationScheduledEmail(input, options = {}) {
+  const normalizedInput = isRecord(input) ? input : {};
+  const appointmentDateTime = formatConsultationDateTime(normalizedInput.appointmentDateTime);
+  const patientName = normalizeString(normalizedInput.patientName) || "Paciente";
+  const psychologistName = normalizeString(normalizedInput.psychologistName) || "Seu psicologo";
+  const statusLabel = getConsultationStatusLabel(normalizedInput.status);
+
+  return sendConsultationEmail(
+    {
+      to: normalizedInput.to,
+      event: "consulta_agendada",
+      subject:
+        normalizeString(normalizedInput.subject) || "Sua consulta foi agendada no Psivinculo",
+      title: "Consulta agendada",
+      intro:
+        normalizeString(normalizedInput.intro) ||
+        `${patientName}, uma consulta com ${psychologistName} foi agendada para ${appointmentDateTime.fullLabel}. Status atual: ${statusLabel}.`,
+      details: buildConsultationEmailDetails(normalizedInput, {
+        includeStatus: true,
+      }),
       ctaLabel: "Abrir agendamento",
       ctaUrl: resolveConsultationCtaUrl(normalizedInput, options),
       footerNote:

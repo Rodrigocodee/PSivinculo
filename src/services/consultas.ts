@@ -354,10 +354,10 @@ export async function cadastrarConsulta(consulta: NovaConsulta) {
     consultationDurationMinutes,
   );
 
-  const { data, error } = await supabase
-    .from("consultas")
-    .insert([
-      {
+  const result = await postConsultationMutation(
+    "/api/consultas/create",
+    {
+      consulta: {
         clinica_id: scope.clinicId,
         psicologo_id: scope.psychologistId,
         paciente_id: consulta.paciente_id,
@@ -369,10 +369,10 @@ export async function cadastrarConsulta(consulta: NovaConsulta) {
         duracao_consulta_min: consultationDurationMinutes,
         local_presencial: consulta.local_presencial ?? null,
       },
-    ])
-    .select();
-
-  if (error) throw error;
+    },
+    "Nao foi possivel cadastrar a consulta.",
+  );
+  const data = result.consultation ? [result.consultation] : [];
 
   logConsultationValueDebug({
     origem: "criacao",

@@ -271,6 +271,26 @@ function expectedServerApiUrl(pathname: string) {
   return apiBaseUrl ? `${apiBaseUrl}${pathname}` : pathname;
 }
 
+function mockCreateConsultationResponse(fetchMock: ReturnType<typeof vi.fn>, overrides: Record<string, unknown> = {}) {
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: vi.fn().mockResolvedValue({
+      success: true,
+      consultation: {
+        id: "consulta-criada",
+        ...overrides,
+      },
+      email: null,
+      payment: null,
+    }),
+  });
+}
+
+function getLastFetchBody(fetchMock: ReturnType<typeof vi.fn>) {
+  const body = fetchMock.mock.calls.at(-1)?.[1]?.body;
+  return typeof body === "string" ? JSON.parse(body) : null;
+}
+
 describe("consultas service", () => {
   const fetchMock = vi.fn();
 
@@ -332,6 +352,14 @@ describe("consultas service", () => {
   });
 
   it("fills valor_consulta from psychologist consultation settings when creating a manual appointment", async () => {
+    mockCreateConsultationResponse(fetchMock, {
+      paciente_id: "paciente-1",
+      psicologo_id: "psi-1",
+      clinica_id: "clinic-1",
+      valor_consulta: 100,
+      duracao_consulta_min: 50,
+    });
+
     await cadastrarConsulta({
       paciente_id: "paciente-1",
       data_consulta: "2099-05-11T14:00:00",
@@ -341,15 +369,25 @@ describe("consultas service", () => {
 
     expect(mocks.getPsychologistConsultationSettingsById).toHaveBeenCalledWith("psi-1");
     expect(mocks.getPsychologistAvailabilityById).toHaveBeenCalledWith("psi-1");
-    expect(mocks.getInsertedRows()).toEqual([
+    expect(fetchMock).toHaveBeenCalledWith(
+      expectedServerApiUrl("/api/consultas/create"),
       expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer psychologist-session-token",
+          "Content-Type": "application/json",
+        }),
+      }),
+    );
+    expect(getLastFetchBody(fetchMock)).toEqual({
+      consulta: expect.objectContaining({
         paciente_id: "paciente-1",
         psicologo_id: "psi-1",
         clinica_id: "clinic-1",
         valor_consulta: 100,
         duracao_consulta_min: 50,
       }),
-    ]);
+    });
   });
 
   it("blocks preview users from creating a manual appointment before persisting it", async () => {
@@ -368,6 +406,10 @@ describe("consultas service", () => {
   });
 
   it("falls back to the current psychologist settings when the responsible psychologist lookup has no configured value", async () => {
+    mockCreateConsultationResponse(fetchMock, {
+      paciente_id: "paciente-2",
+      valor_consulta: 100,
+    });
     mocks.getPsychologistConsultationSettingsById.mockResolvedValueOnce({
       consultationPrice: null,
       consultationDurationMinutes: 50,
@@ -389,15 +431,20 @@ describe("consultas service", () => {
     });
 
     expect(mocks.getCurrentPsychologistConsultationSettings).toHaveBeenCalledTimes(1);
-    expect(mocks.getInsertedRows()).toEqual([
-      expect.objectContaining({
+    expect(getLastFetchBody(fetchMock)).toEqual({
+      consulta: expect.objectContaining({
         paciente_id: "paciente-2",
         valor_consulta: 100,
       }),
-    ]);
+    });
   });
 
   it("normalizes an explicit valor_consulta in pt-BR format before inserting", async () => {
+    mockCreateConsultationResponse(fetchMock, {
+      paciente_id: "paciente-3",
+      valor_consulta: 150.5,
+    });
+
     await cadastrarConsulta({
       paciente_id: "paciente-3",
       data_consulta: "2099-05-12T10:30:00",
@@ -407,12 +454,12 @@ describe("consultas service", () => {
 
     expect(mocks.getPsychologistConsultationSettingsById).not.toHaveBeenCalled();
     expect(mocks.getCurrentPsychologistConsultationSettings).not.toHaveBeenCalled();
-    expect(mocks.getInsertedRows()).toEqual([
-      expect.objectContaining({
+    expect(getLastFetchBody(fetchMock)).toEqual({
+      consulta: expect.objectContaining({
         paciente_id: "paciente-3",
         valor_consulta: 150.5,
       }),
-    ]);
+    });
   });
 
   it("blocks appointments outside the configured range", async () => {
