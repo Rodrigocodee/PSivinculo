@@ -249,6 +249,47 @@ async function resolvePatientEmail(client, patientId, fallbackEmail) {
   }
 }
 
+async function loadPatientEmailRecord(client, patientId) {
+  const normalizedPatientId = normalizeString(patientId);
+
+  if (!normalizedPatientId) {
+    return {
+      patient: null,
+      error: null,
+      selectMode: "patient_id_missing",
+    };
+  }
+
+  const detailedSelect =
+    "id, nome, email, link_sessao_online, link_sessao_online_paciente";
+  const minimalSelect = "id, nome, email";
+  const detailedResult = await client
+    .from("pacientes")
+    .select(detailedSelect)
+    .eq("id", normalizedPatientId)
+    .maybeSingle();
+
+  if (!detailedResult.error) {
+    return {
+      patient: isRecord(detailedResult.data) ? detailedResult.data : null,
+      error: null,
+      selectMode: "detailed",
+    };
+  }
+
+  const minimalResult = await client
+    .from("pacientes")
+    .select(minimalSelect)
+    .eq("id", normalizedPatientId)
+    .maybeSingle();
+
+  return {
+    patient: isRecord(minimalResult.data) ? minimalResult.data : null,
+    error: minimalResult.error || detailedResult.error,
+    selectMode: minimalResult.error ? "failed" : "minimal",
+  };
+}
+
 async function resolvePsychologistName(client, psychologistId) {
   const normalizedPsychologistId = normalizeString(psychologistId);
 
@@ -356,13 +397,9 @@ async function loadConsultationEmailContext(consultationId, env) {
 
   const patientId = pickString(consultation, ["paciente_id"]);
   const psychologistId = pickString(consultation, ["psicologo_id"]);
-  const { data: patient, error: patientError } = patientId
-    ? await client
-        .from("pacientes")
-        .select("id, nome, email, link_sessao_online, link_sessao_online_paciente")
-        .eq("id", patientId)
-        .maybeSingle()
-    : { data: null, error: null };
+  const patientLookup = await loadPatientEmailRecord(client, patientId);
+  const patient = patientLookup.patient;
+  const patientError = patientLookup.error;
 
   if (patientError) {
     throw toSupabaseHttpError(
@@ -377,6 +414,7 @@ async function loadConsultationEmailContext(consultationId, env) {
     patientId,
     pickString(patient, ["email"]),
   );
+  const patientEmailFromRecord = normalizeEmail(pickString(patient, ["email"]));
   const psychologist = await resolvePsychologistEmailContext(client, psychologistId);
   const notificationPreferences = await loadPsychologistNotificationPreferences(
     client,
@@ -395,6 +433,9 @@ async function loadConsultationEmailContext(consultationId, env) {
     patientName:
       pickString(patient, ["nome"]) || buildDisplayNameFromEmail(patientEmail, "Paciente"),
     patientEmail,
+    patientFound: Boolean(patient),
+    patientEmailFromRecord,
+    patientLookupMode: patientLookup.selectMode,
     psychologistName: psychologist.name,
     appointmentDateTime: pickString(consultation, ["data_consulta"]),
     requestedOriginalDateTime: pickString(consultation, ["data_consulta_solicitada_original"]),
@@ -460,6 +501,46 @@ function resolvePreviousAppointmentDateTime(previousConsultation, emailContext) 
   return "";
 }
 
+function logConsultationConfirmationEmailDiagnostic({
+  label,
+  previousConsultation,
+  currentConsultation,
+  emailContext = null,
+  event,
+  skippedReason = null,
+}) {
+  const currentConsultationId = pickString(currentConsultation, ["id"]);
+  const patientId =
+    pickString(emailContext || null, ["patientId"]) ||
+    pickString(currentConsultation, ["paciente_id"]);
+  const psychologistId =
+    pickString(emailContext || null, ["psychologistId"]) ||
+    pickString(currentConsultation, ["psicologo_id"]);
+  const patientEmail =
+    pickString(emailContext || null, ["patientEmail"]) ||
+    normalizeEmail(pickString(currentConsultation, ["email", "paciente_email", "email_paciente"]));
+  const patientEmailFromRecord = pickString(emailContext || null, ["patientEmailFromRecord"]);
+
+  console.info(`[Psivinculo][consultation-email][${label}]`, {
+    consultationId: currentConsultationId || null,
+    patientId: patientId || null,
+    psychologistId: psychologistId || null,
+    previousStatus: normalizeString(previousConsultation?.status) || null,
+    currentStatus: normalizeString(currentConsultation?.status) || null,
+    event: event || null,
+    patientFound:
+      emailContext && Object.prototype.hasOwnProperty.call(emailContext, "patientFound")
+        ? Boolean(emailContext.patientFound)
+        : null,
+    patientLookupMode: pickString(emailContext || null, ["patientLookupMode"]) || null,
+    patientEmailExists: isValidEmail(patientEmail),
+    patientEmailMasked: maskEmailForLogs(patientEmail),
+    patientRecordEmailExists: isValidEmail(patientEmailFromRecord),
+    patientRecordEmailMasked: maskEmailForLogs(patientEmailFromRecord),
+    skippedReason,
+  });
+}
+
 async function maybeSendConsultationEmailNotification({
   previousConsultation,
   currentConsultation,
@@ -487,6 +568,16 @@ async function maybeSendConsultationEmailNotification({
     : false;
 
   if (!shouldSendConfirmation && !shouldSendReschedule) {
+    if (normalizeString(currentConsultation?.status).toLowerCase() === "confirmada") {
+      logConsultationConfirmationEmailDiagnostic({
+        label: "not_applicable",
+        previousConsultation,
+        currentConsultation,
+        event: null,
+        skippedReason: "not_applicable",
+      });
+    }
+
     return {
       attempted: false,
       sent: false,
@@ -501,7 +592,25 @@ async function maybeSendConsultationEmailNotification({
     normalizeEmail(pickString(currentConsultation, ["email", "paciente_email", "email_paciente"]));
   const event = shouldSendConfirmation ? "confirmation" : "reschedule";
 
+  if (shouldSendConfirmation) {
+    logConsultationConfirmationEmailDiagnostic({
+      label: "confirmation_diagnostic",
+      previousConsultation,
+      currentConsultation,
+      emailContext,
+      event,
+    });
+  }
+
   if (emailContext.notificationPreferences?.patient_confirmation === false) {
+    logConsultationConfirmationEmailDiagnostic({
+      label: "skipped_preferences_diagnostic",
+      previousConsultation,
+      currentConsultation,
+      emailContext,
+      event,
+      skippedReason: "notification_preferences_disabled",
+    });
     console.info("[Psivinculo][notifications][notification_skipped_due_to_preferences]", {
       consultationId: currentConsultationId,
       patientId: emailContext.patientId || null,
@@ -519,6 +628,14 @@ async function maybeSendConsultationEmailNotification({
   }
 
   if (!isValidEmail(emailContext.patientEmail)) {
+    logConsultationConfirmationEmailDiagnostic({
+      label: "skipped_missing_patient_email_diagnostic",
+      previousConsultation,
+      currentConsultation,
+      emailContext,
+      event,
+      skippedReason: "missing_patient_email",
+    });
     console.warn("[Psivinculo][consultation-email][skipped_missing_patient_email]", {
       consultationId: currentConsultationId,
       patientId: emailContext.patientId || null,
@@ -587,6 +704,14 @@ async function maybeSendConsultationEmailNotification({
       emailId: normalizeString(result?.emailId) || null,
     };
   } catch (error) {
+    logConsultationConfirmationEmailDiagnostic({
+      label: "send_failed_diagnostic",
+      previousConsultation,
+      currentConsultation,
+      emailContext,
+      event,
+      skippedReason: "email_send_failed",
+    });
     console.error("[Psivinculo][consultation-email][send_failed]", {
       consultationId: currentConsultationId,
       patientId: emailContext.patientId || null,
