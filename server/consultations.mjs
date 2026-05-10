@@ -45,6 +45,11 @@ function normalizeEmail(value) {
   return normalizeString(value).toLowerCase();
 }
 
+function isValidEmail(value) {
+  const normalizedValue = normalizeEmail(value);
+  return Boolean(normalizedValue) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedValue);
+}
+
 function pickString(source, keys) {
   if (!isRecord(source)) return "";
 
@@ -53,6 +58,10 @@ function pickString(source, keys) {
 
     if (typeof value === "string" && value.trim()) {
       return value.trim();
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
     }
   }
 
@@ -282,12 +291,51 @@ async function resolvePsychologistName(client, psychologistId) {
   return "Seu psicologo";
 }
 
+async function resolvePsychologistEmailContext(client, psychologistId) {
+  const normalizedPsychologistId = normalizeString(psychologistId);
+
+  if (!normalizedPsychologistId) {
+    return {
+      name: "Seu psicologo",
+      onlineSessionLink: "",
+      presentialLocation: "",
+    };
+  }
+
+  for (const column of ["id", "auth_id"]) {
+    const { data, error } = await client
+      .from("usuarios")
+      .select("id, auth_id, nome, email, link_sessao_online, local_presencial")
+      .eq(column, normalizedPsychologistId)
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !isRecord(data)) {
+      continue;
+    }
+
+    return {
+      name:
+        pickString(data, ["nome"]) ||
+        buildDisplayNameFromEmail(pickString(data, ["email"]), "Seu psicologo"),
+      onlineSessionLink: pickString(data, ["link_sessao_online"]),
+      presentialLocation: pickString(data, ["local_presencial"]),
+    };
+  }
+
+  return {
+    name: await resolvePsychologistName(client, normalizedPsychologistId),
+    onlineSessionLink: "",
+    presentialLocation: "",
+  };
+}
+
 async function loadConsultationEmailContext(consultationId, env) {
   const client = getServerSupabaseClient(env);
   const { data: consultation, error: consultationError } = await client
     .from("consultas")
-    .select(
-      "id, paciente_id, psicologo_id, data_consulta, data_consulta_solicitada_original, status, modalidade_consulta, local_presencial",
+        .select(
+      "id, paciente_id, psicologo_id, data_consulta, data_consulta_solicitada_original, status, modalidade_consulta, local_presencial, valor_consulta",
     )
     .eq("id", consultationId)
     .maybeSingle();
@@ -311,7 +359,7 @@ async function loadConsultationEmailContext(consultationId, env) {
   const { data: patient, error: patientError } = patientId
     ? await client
         .from("pacientes")
-        .select("id, nome, email")
+        .select("id, nome, email, link_sessao_online, link_sessao_online_paciente")
         .eq("id", patientId)
         .maybeSingle()
     : { data: null, error: null };
@@ -329,7 +377,7 @@ async function loadConsultationEmailContext(consultationId, env) {
     patientId,
     pickString(patient, ["email"]),
   );
-  const psychologistName = await resolvePsychologistName(client, psychologistId);
+  const psychologist = await resolvePsychologistEmailContext(client, psychologistId);
   const notificationPreferences = await loadPsychologistNotificationPreferences(
     client,
     psychologistId,
@@ -347,11 +395,17 @@ async function loadConsultationEmailContext(consultationId, env) {
     patientName:
       pickString(patient, ["nome"]) || buildDisplayNameFromEmail(patientEmail, "Paciente"),
     patientEmail,
-    psychologistName,
+    psychologistName: psychologist.name,
     appointmentDateTime: pickString(consultation, ["data_consulta"]),
     requestedOriginalDateTime: pickString(consultation, ["data_consulta_solicitada_original"]),
     appointmentModality: pickString(consultation, ["modalidade_consulta"]),
-    presentialLocation: pickString(consultation, ["local_presencial"]),
+    presentialLocation:
+      pickString(consultation, ["local_presencial"]) || psychologist.presentialLocation,
+    roomLink:
+      pickString(patient, ["link_sessao_online_paciente", "link_sessao_online"]) ||
+      psychologist.onlineSessionLink ||
+      pickString(consultation, ["local_presencial"]),
+    amount: pickString(consultation, ["valor_consulta"]),
     status: pickString(consultation, ["status"]),
     notificationPreferences,
   };
@@ -442,6 +496,9 @@ async function maybeSendConsultationEmailNotification({
   }
 
   const emailContext = await loadConsultationEmailContext(currentConsultationId, env);
+  emailContext.patientEmail =
+    emailContext.patientEmail ||
+    normalizeEmail(pickString(currentConsultation, ["email", "paciente_email", "email_paciente"]));
   const event = shouldSendConfirmation ? "confirmation" : "reschedule";
 
   if (emailContext.notificationPreferences?.patient_confirmation === false) {
@@ -461,7 +518,7 @@ async function maybeSendConsultationEmailNotification({
     };
   }
 
-  if (!emailContext.patientEmail) {
+  if (!isValidEmail(emailContext.patientEmail)) {
     console.warn("[Psivinculo][consultation-email][skipped_missing_patient_email]", {
       consultationId: currentConsultationId,
       patientId: emailContext.patientId || null,
@@ -489,6 +546,8 @@ async function maybeSendConsultationEmailNotification({
     ),
     appointmentModality: emailContext.appointmentModality,
     presentialLocation: emailContext.presentialLocation,
+    roomLink: emailContext.roomLink,
+    amount: emailContext.amount,
     status: emailContext.status,
   };
 

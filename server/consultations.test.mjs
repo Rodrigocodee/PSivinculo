@@ -159,6 +159,12 @@ function createMockClient(input) {
 describe("consultation notifications", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    emailMocks.sendPatientConsultationConfirmationEmail.mockResolvedValue({
+      emailId: "email-1",
+    });
+    emailMocks.sendPatientConsultationRescheduleEmail.mockResolvedValue({
+      emailId: "email-2",
+    });
     paymentMocks.createConsultationPayment.mockResolvedValue({
       consultationId: "consulta-1",
       paymentStatus: "aguardando_pagamento",
@@ -323,5 +329,383 @@ describe("consultation notifications", () => {
 
     expect(client.state.consultas[0].status).toBe("solicitada");
     expect(paymentMocks.createConsultationPayment).not.toHaveBeenCalled();
+  });
+
+  it("sends a confirmation email when a manual consultation is confirmed and the patient has email", async () => {
+    const client = createMockClient({
+      consultas: [
+        {
+          id: "consulta-1",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-10T15:30:00",
+          data_consulta_solicitada_original: null,
+          status: "pendente",
+          modalidade_consulta: "online",
+          local_presencial: null,
+          valor_consulta: 180,
+        },
+      ],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Manual",
+          email: "ana.manual@example.com",
+          link_sessao_online_paciente: "https://meet.example.com/ana",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          email: "camila@example.com",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+          notification_preferences: {
+            patient_confirmation: true,
+          },
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    supabaseMocks.resolveSupabaseAuthUser.mockResolvedValue({
+      id: "auth-user-1",
+      email: "camila@example.com",
+      user_metadata: {
+        tipo_usuario: "psicologo",
+      },
+    });
+
+    const result = await updateConsultaAndNotify(
+      {
+        consultaId: "consulta-1",
+        updates: {
+          status: "confirmada",
+        },
+      },
+      {
+        requestHeaders: {
+          authorization: "Bearer token-1",
+        },
+        env: {
+          APP_BASE_URL: "https://app.psivinculo.test",
+        },
+      },
+    );
+
+    expect(result.consultation.status).toBe("confirmada");
+    expect(result.email).toEqual(
+      expect.objectContaining({
+        attempted: true,
+        sent: true,
+        event: "confirmation",
+      }),
+    );
+    expect(emailMocks.sendPatientConsultationConfirmationEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "ana.manual@example.com",
+        patientName: "Ana Manual",
+        psychologistName: "Dra. Camila",
+        appointmentDateTime: "2026-05-10T15:30:00",
+        appointmentModality: "online",
+        roomLink: "https://meet.example.com/ana",
+        amount: "180",
+      }),
+      expect.objectContaining({
+        baseUrl: "https://app.psivinculo.test",
+      }),
+    );
+  });
+
+  it("skips the confirmation email when the confirmed consultation has no patient email", async () => {
+    const client = createMockClient({
+      consultas: [
+        {
+          id: "consulta-1",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-10T15:30:00",
+          data_consulta_solicitada_original: null,
+          status: "pendente",
+          modalidade_consulta: null,
+          local_presencial: null,
+        },
+      ],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Sem Email",
+          email: null,
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          email: "camila@example.com",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    supabaseMocks.resolveSupabaseAuthUser.mockResolvedValue({
+      id: "auth-user-1",
+      email: "camila@example.com",
+      user_metadata: {
+        tipo_usuario: "psicologo",
+      },
+    });
+
+    const result = await updateConsultaAndNotify(
+      {
+        consultaId: "consulta-1",
+        updates: {
+          status: "confirmada",
+        },
+      },
+      {
+        requestHeaders: {
+          authorization: "Bearer token-1",
+        },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.status).toBe("confirmada");
+    expect(result.email).toEqual(
+      expect.objectContaining({
+        attempted: true,
+        sent: false,
+        event: "confirmation",
+        skippedReason: "missing_patient_email",
+      }),
+    );
+    expect(emailMocks.sendPatientConsultationConfirmationEmail).not.toHaveBeenCalled();
+  });
+
+  it("uses the consultation email fallback when the patient row has no email", async () => {
+    const client = createMockClient({
+      consultas: [
+        {
+          id: "consulta-1",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-10T15:30:00",
+          data_consulta_solicitada_original: null,
+          status: "pendente",
+          modalidade_consulta: "online",
+          local_presencial: null,
+          paciente_email: "solicitacao@example.com",
+        },
+      ],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Solicitacao",
+          email: null,
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          email: "camila@example.com",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    supabaseMocks.resolveSupabaseAuthUser.mockResolvedValue({
+      id: "auth-user-1",
+      email: "camila@example.com",
+      user_metadata: {
+        tipo_usuario: "psicologo",
+      },
+    });
+
+    await updateConsultaAndNotify(
+      {
+        consultaId: "consulta-1",
+        updates: {
+          status: "confirmada",
+        },
+      },
+      {
+        requestHeaders: {
+          authorization: "Bearer token-1",
+        },
+        env: {},
+      },
+    );
+
+    expect(emailMocks.sendPatientConsultationConfirmationEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "solicitacao@example.com",
+        patientName: "Ana Solicitacao",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("keeps the consultation confirmed when the confirmation email fails", async () => {
+    const client = createMockClient({
+      consultas: [
+        {
+          id: "consulta-1",
+          paciente_id: "paciente-1",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-10T15:30:00",
+          data_consulta_solicitada_original: null,
+          status: "pendente",
+          modalidade_consulta: "presencial",
+          local_presencial: "Sala 2",
+        },
+      ],
+      pacientes: [
+        {
+          id: "paciente-1",
+          nome: "Ana Falha Email",
+          email: "ana.falha@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          email: "camila@example.com",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    supabaseMocks.resolveSupabaseAuthUser.mockResolvedValue({
+      id: "auth-user-1",
+      email: "camila@example.com",
+      user_metadata: {
+        tipo_usuario: "psicologo",
+      },
+    });
+    emailMocks.sendPatientConsultationConfirmationEmail.mockRejectedValueOnce(
+      new Error("Resend unavailable"),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const result = await updateConsultaAndNotify(
+        {
+          consultaId: "consulta-1",
+          updates: {
+            status: "confirmada",
+          },
+        },
+        {
+          requestHeaders: {
+            authorization: "Bearer token-1",
+          },
+          env: {},
+        },
+      );
+
+      expect(result.consultation.status).toBe("confirmada");
+      expect(client.state.consultas[0].status).toBe("confirmada");
+      expect(result.email).toEqual(
+        expect.objectContaining({
+          attempted: true,
+          sent: false,
+          event: "confirmation",
+          skippedReason: "email_send_failed",
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[Psivinculo][consultation-email][send_failed]",
+        expect.objectContaining({
+          consultationId: "consulta-1",
+          patientId: "paciente-1",
+          patientEmail: "an***a@example.com",
+          event: "confirmation",
+        }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("sends confirmation email to a patient without an Auth account when pacientes has email", async () => {
+    const client = createMockClient({
+      consultas: [
+        {
+          id: "consulta-1",
+          paciente_id: "paciente-manual-sem-auth",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-10T15:30:00",
+          data_consulta_solicitada_original: null,
+          status: "pendente",
+          modalidade_consulta: "presencial",
+          local_presencial: "Rua Clinica, 123",
+        },
+      ],
+      pacientes: [
+        {
+          id: "paciente-manual-sem-auth",
+          nome: "Ana Sem Auth",
+          email: "ana.sem.auth@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          email: "camila@example.com",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    supabaseMocks.resolveSupabaseAuthUser.mockResolvedValue({
+      id: "auth-user-1",
+      email: "camila@example.com",
+      user_metadata: {
+        tipo_usuario: "psicologo",
+      },
+    });
+
+    await updateConsultaAndNotify(
+      {
+        consultaId: "consulta-1",
+        updates: {
+          status: "confirmada",
+        },
+      },
+      {
+        requestHeaders: {
+          authorization: "Bearer token-1",
+        },
+        env: {},
+      },
+    );
+
+    expect(client.auth.admin.getUserById).not.toHaveBeenCalled();
+    expect(emailMocks.sendPatientConsultationConfirmationEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "ana.sem.auth@example.com",
+        patientName: "Ana Sem Auth",
+        presentialLocation: "Rua Clinica, 123",
+      }),
+      expect.any(Object),
+    );
   });
 });

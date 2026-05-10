@@ -231,7 +231,7 @@ function getConsultationModalityLabel(value) {
   if (normalizedValue === "presencial") return "Presencial";
   if (normalizedValue === "online") return "Online";
 
-  return "";
+  return "A definir";
 }
 
 function resolveConsultationCtaUrl(input, options = {}) {
@@ -257,6 +257,8 @@ function buildConsultationEmailDetails(input, options = {}) {
   const previousAppointmentDateTime = formatConsultationDateTime(input.previousAppointmentDateTime);
   const modalityLabel = getConsultationModalityLabel(input.appointmentModality);
   const presentialLocation = normalizeString(input.presentialLocation);
+  const roomLink = normalizeString(input.roomLink);
+  const amountLabel = formatCurrency(input.amount);
   const shouldIncludePreviousDateTime =
     options.includePreviousDateTime === true &&
     normalizeString(input.previousAppointmentDateTime) &&
@@ -279,12 +281,19 @@ function buildConsultationEmailDetails(input, options = {}) {
     { label: "Horario", value: appointmentDateTime.timeLabel },
   );
 
-  if (modalityLabel) {
-    details.push({ label: "Modalidade", value: modalityLabel });
+  details.push({ label: "Modalidade", value: modalityLabel });
+
+  if (roomLink) {
+    details.push({
+      label: normalizeString(input.appointmentModality).toLowerCase() === "online" ? "Sala online" : "Local",
+      value: roomLink,
+    });
+  } else if (presentialLocation) {
+    details.push({ label: "Local", value: presentialLocation });
   }
 
-  if (presentialLocation) {
-    details.push({ label: "Local", value: presentialLocation });
+  if (amountLabel) {
+    details.push({ label: "Valor", value: amountLabel });
   }
 
   return details;
@@ -574,7 +583,7 @@ export async function sendPatientConsultationConfirmationEmail(input, options = 
       ctaUrl: resolveConsultationCtaUrl(normalizedInput, options),
       footerNote:
         normalizeString(normalizedInput.footerNote) ||
-        "Se precisar revisar os detalhes do agendamento, acesse sua area de agendamentos no Psivinculo.",
+        "Em caso de duvidas sobre a consulta, entre em contato diretamente com o seu psicologo.",
     },
     options,
   );
