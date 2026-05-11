@@ -4,6 +4,7 @@ import {
 } from "@/components/psychologist/ProfessionalPreview";
 import { toast } from "@/components/ui/sonner";
 import { useCurrentPsychologistProfile } from "@/hooks/use-current-psychologist-profile";
+import { useCurrentPsychologistPaymentSettings } from "@/hooks/use-current-psychologist-payment-settings";
 import {
   atualizarConsulta,
   cadastrarConsulta,
@@ -21,6 +22,7 @@ import {
   normalizeAppointmentModality,
   type AppointmentModality,
 } from "@/services/psychologistConsultationSettings";
+import { isPsychologistReceivablesEnabled } from "@/services/psychologistPaymentSettings";
 import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
 import {
   buildAgendaHourRows,
@@ -197,8 +199,9 @@ const initialAppointmentForm = {
   paciente_id: "",
   data: "",
   hora: "08:00",
-  status: "pending" as keyof typeof statusLabels,
+  status: "confirmed" as keyof typeof statusLabels,
   observacoes: "",
+  chargeMode: "none" as "none" | "site",
 };
 
 function getAppointmentType(status: keyof typeof statusLabels, modality: AppointmentModality | null) {
@@ -343,6 +346,7 @@ function mapConsultaToForm(consulta: ConsultaDoDia) {
     hora: consulta.time,
     status: consulta.status,
     observacoes: consulta.notes,
+    chargeMode: "none" as const,
   };
 }
 
@@ -401,6 +405,7 @@ function getConsultationPaymentDescription(payment: ConsultationPaymentResult) {
 
 export default function PsychologistAgenda() {
   const { data: profile } = useCurrentPsychologistProfile();
+  const { data: paymentSettings } = useCurrentPsychologistPaymentSettings();
   const [searchParams, setSearchParams] = useSearchParams();
   const [view, setView] = useState<"day" | "week" | "month">("day");
   const [selectedDate, setSelectedDate] = useState(() => parseDateKey(searchParams.get("data")) ?? new Date());
@@ -426,6 +431,7 @@ export default function PsychologistAgenda() {
   const [selectedApt, setSelectedApt] = useState<ConsultaDoDia | null>(null);
   const [editingApt, setEditingApt] = useState<ConsultaDoDia | null>(null);
   const psychologistName = profile?.fullName?.trim() || "Profissional";
+  const canChargeThroughSite = isPsychologistReceivablesEnabled(paymentSettings);
   const agendaSchedule = useMemo(
     () => availabilitySettings?.schedule ?? getDefaultWorkingHours(),
     [availabilitySettings?.schedule],
@@ -968,8 +974,9 @@ export default function PsychologistAgenda() {
       const created = await cadastrarConsulta({
         paciente_id: appointmentForm.paciente_id,
         data_consulta: `${appointmentForm.data}T${appointmentForm.hora}:00`,
-        status: reverseStatusMap[appointmentForm.status],
+        status: "confirmada",
         observacoes: appointmentForm.observacoes.trim() || null,
+        chargeMode: canChargeThroughSite && appointmentForm.chargeMode === "site" ? "site" : "none",
       });
 
       const selectedPatient = patients.find((patient) => patient.id === appointmentForm.paciente_id);
@@ -983,15 +990,21 @@ export default function PsychologistAgenda() {
             requestedDateTimeOriginal: `${appointmentForm.data}T${appointmentForm.hora}:00`,
             respondedAt: null,
             duration: created[0].duracao_consulta_min ?? consultationDurationMinutes,
-            status: appointmentForm.status,
+            status: "confirmed",
             modality: null,
-            type: getAppointmentType(appointmentForm.status, null),
-            room: getAppointmentRoom(appointmentForm.status, null),
+            type: getAppointmentType("confirmed", null),
+            room: getAppointmentRoom("confirmed", null),
             notes: appointmentForm.observacoes.trim(),
-            consultationValue: null,
-            paymentStatus: "nao_gerado",
-            invoiceUrl: null,
-            bankSlipUrl: null,
+            consultationValue:
+              typeof created[0].valor_consulta === "number" ? created[0].valor_consulta : null,
+            paymentStatus:
+              (typeof created[0].status_pagamento === "string"
+                ? created[0].status_pagamento
+                : "nao_gerado") as ConsultationPaymentStatus,
+            invoiceUrl:
+              typeof created[0].asaas_invoice_url === "string" ? created[0].asaas_invoice_url : null,
+            bankSlipUrl:
+              typeof created[0].asaas_bank_slip_url === "string" ? created[0].asaas_bank_slip_url : null,
           }
         : null;
 
@@ -1523,16 +1536,29 @@ export default function PsychologistAgenda() {
 
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-foreground">Status</label>
-                <select
-                  value={appointmentForm.status}
-                  onChange={(e) => setAppointmentForm((current) => ({ ...current, status: e.target.value as keyof typeof statusLabels }))}
-                  className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
-                >
-                  {manualStatusOptions.map((status) => (
-                    <option key={status} value={status}>{statusLabels[status]}</option>
-                  ))}
-                </select>
+                <div className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm font-medium text-foreground">
+                  Confirmada
+                </div>
               </div>
+
+              {canChargeThroughSite ? (
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">Cobranca</label>
+                  <select
+                    value={appointmentForm.chargeMode}
+                    onChange={(e) =>
+                      setAppointmentForm((current) => ({
+                        ...current,
+                        chargeMode: e.target.value === "site" ? "site" : "none",
+                      }))
+                    }
+                    className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-ring/20"
+                  >
+                    <option value="none">Sem cobranca pelo site</option>
+                    <option value="site">Cobrar pelo site</option>
+                  </select>
+                </div>
+              ) : null}
 
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-foreground">Observacoes</label>

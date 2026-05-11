@@ -124,6 +124,7 @@ vi.mock("@/services/currentPsychologist", () => ({
 
 import {
   PSIVINCULO_ASAAS_SPLIT_PAYOUT_PERCENTAGE,
+  isPsychologistReceivablesEnabled,
   saveCurrentPsychologistPaymentSettings,
 } from "@/services/psychologistPaymentSettings";
 import { PREVIEW_FEATURE_LOCK_MESSAGE } from "@/services/professionalAccessGuard";
@@ -179,5 +180,23 @@ describe("saveCurrentPsychologistPaymentSettings", () => {
         asaasWalletId: "wallet-active",
       }),
     );
+  });
+});
+
+describe("isPsychologistReceivablesEnabled", () => {
+  it("allows the agenda charge option only for Asaas split receivables", () => {
+    expect(
+      isPsychologistReceivablesEnabled({
+        paymentType: "asaas_split",
+        receivablesEnabled: true,
+      }),
+    ).toBe(true);
+    expect(
+      isPsychologistReceivablesEnabled({
+        paymentType: "externo",
+        receivablesEnabled: false,
+      }),
+    ).toBe(false);
+    expect(isPsychologistReceivablesEnabled(null)).toBe(false);
   });
 });

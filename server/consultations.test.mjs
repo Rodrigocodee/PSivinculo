@@ -832,7 +832,7 @@ describe("consultation notifications", () => {
         patientName: "Ana Criacao",
         psychologistName: "Dra. Camila",
         appointmentDateTime: "2026-05-12T09:00:00",
-        status: "pendente",
+        status: "confirmada",
       }),
       expect.objectContaining({
         baseUrl: "https://app.psivinculo.test",
@@ -847,6 +847,316 @@ describe("consultation notifications", () => {
           status: "sent",
         }),
       ]),
+    );
+    expect(result.consultation.status).toBe("confirmada");
+    expect(client.state.consultas[0].status).toBe("confirmada");
+    expect(paymentMocks.createConsultationPayment).not.toHaveBeenCalled();
+  });
+
+  it("creates a confirmed consultation without site billing when charge mode is none", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-sem-cobranca",
+          nome: "Ana Sem Cobranca",
+          email: "ana.sem.cobranca@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+          tipo_recebimento: "asaas_split",
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+
+    const result = await createConsultaAndNotify(
+      {
+        chargeMode: "none",
+        consulta: {
+          paciente_id: "paciente-sem-cobranca",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T09:30:00",
+          status: "solicitada",
+          valor_consulta: 200,
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.status).toBe("confirmada");
+    expect(result.payment).toBeNull();
+    expect(client.state.consultas[0]).toEqual(
+      expect.objectContaining({
+        paciente_id: "paciente-sem-cobranca",
+        status: "confirmada",
+      }),
+    );
+    expect(paymentMocks.createConsultationPayment).not.toHaveBeenCalled();
+  });
+
+  it("creates or associates a site payment when charge mode is site", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-cobranca",
+          nome: "Ana Cobranca",
+          email: "ana.cobranca@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+          tipo_recebimento: "asaas_split",
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    paymentMocks.createConsultationPayment.mockResolvedValueOnce({
+      consultationId: "inserted-1",
+      paymentMode: "asaas_split",
+      paymentStatus: "aguardando_pagamento",
+      created: true,
+      reusedExisting: false,
+      success: true,
+      asaasPaymentId: "pay-1",
+      invoiceUrl: "https://pay.example.com/invoice",
+      bankSlipUrl: null,
+      billingType: "UNDEFINED",
+      externalReference: "inserted-1",
+      splitSent: true,
+      walletIdMasked: "wal***123",
+      payoutPercentage: 95,
+      message: null,
+      errorCode: null,
+    });
+
+    const result = await createConsultaAndNotify(
+      {
+        chargeMode: "site",
+        consulta: {
+          paciente_id: "paciente-cobranca",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T10:30:00",
+          status: "pendente",
+          valor_consulta: 200,
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.status).toBe("confirmada");
+    expect(result.payment).toEqual(
+      expect.objectContaining({
+        consultationId: "inserted-1",
+        paymentStatus: "aguardando_pagamento",
+        created: true,
+      }),
+    );
+    expect(paymentMocks.createConsultationPayment).toHaveBeenCalledTimes(1);
+    expect(paymentMocks.createConsultationPayment).toHaveBeenCalledWith(
+      { consultaId: "inserted-1" },
+      expect.objectContaining({
+        requestHeaders: expect.objectContaining({
+          authorization: "Bearer token-1",
+        }),
+      }),
+    );
+  });
+
+  it("keeps the consultation created when site payment creation fails", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-cobranca-falha",
+          nome: "Ana Cobranca Falha",
+          email: "ana.cobranca.falha@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+          tipo_recebimento: "asaas_split",
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    paymentMocks.createConsultationPayment.mockRejectedValueOnce(new Error("Asaas unavailable"));
+
+    const result = await createConsultaAndNotify(
+      {
+        chargeMode: "site",
+        consulta: {
+          paciente_id: "paciente-cobranca-falha",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T10:45:00",
+          status: "pendente",
+          valor_consulta: 200,
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.status).toBe("confirmada");
+    expect(result.payment).toEqual(
+      expect.objectContaining({
+        consultationId: "inserted-1",
+        paymentStatus: "erro",
+        success: false,
+        errorCode: "CONSULTATION_PAYMENT_CREATE_FAILED",
+      }),
+    );
+    expect(client.state.consultas[0].status).toBe("confirmada");
+  });
+
+  it("does not create site billing for psychologists without platform receivables enabled", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-externo",
+          nome: "Ana Pagamento Externo",
+          email: "ana.externo@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+          tipo_recebimento: "externo",
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+
+    const result = await createConsultaAndNotify(
+      {
+        chargeMode: "site",
+        consulta: {
+          paciente_id: "paciente-externo",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T11:00:00",
+          status: "pendente",
+          valor_consulta: 200,
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(result.consultation.status).toBe("confirmada");
+    expect(result.payment).toBeNull();
+    expect(paymentMocks.createConsultationPayment).not.toHaveBeenCalled();
+  });
+
+  it("includes site payment details in the scheduled email after creating a charged consultation", async () => {
+    const client = createMockClient({
+      consultas: [],
+      pacientes: [
+        {
+          id: "paciente-email-cobranca",
+          nome: "Ana Email Cobranca",
+          email: "ana.email.cobranca@example.com",
+        },
+      ],
+      usuarios: [
+        {
+          id: "psi-user-1",
+          auth_id: "auth-user-1",
+          nome: "Dra. Camila",
+          tipo_usuario: "psicologo",
+          assinatura_ativa: true,
+          tipo_recebimento: "asaas_split",
+        },
+      ],
+    });
+    supabaseMocks.userClient = client;
+    supabaseMocks.serverClient = client;
+    paymentMocks.createConsultationPayment.mockImplementationOnce(async () => {
+      Object.assign(client.state.consultas[0], {
+        status_pagamento: "aguardando_pagamento",
+        asaas_invoice_url: "https://pay.example.com/charged",
+      });
+
+      return {
+        consultationId: "inserted-1",
+        paymentMode: "asaas_split",
+        paymentStatus: "aguardando_pagamento",
+        created: true,
+        reusedExisting: false,
+        success: true,
+        asaasPaymentId: "pay-2",
+        invoiceUrl: "https://pay.example.com/charged",
+        bankSlipUrl: null,
+        billingType: "UNDEFINED",
+        externalReference: "inserted-1",
+        splitSent: true,
+        walletIdMasked: "wal***123",
+        payoutPercentage: 95,
+        message: null,
+        errorCode: null,
+      };
+    });
+
+    await createConsultaAndNotify(
+      {
+        chargeMode: "site",
+        consulta: {
+          paciente_id: "paciente-email-cobranca",
+          psicologo_id: "psi-user-1",
+          data_consulta: "2026-05-12T11:30:00",
+          status: "confirmada",
+          valor_consulta: 200,
+        },
+      },
+      {
+        requestHeaders: { authorization: "Bearer token-1" },
+        env: {},
+      },
+    );
+
+    expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "ana.email.cobranca@example.com",
+        status: "confirmada",
+        paymentStatus: "aguardando_pagamento",
+        paymentLink: "https://pay.example.com/charged",
+      }),
+      expect.any(Object),
     );
   });
 
@@ -895,13 +1205,13 @@ describe("consultation notifications", () => {
     expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "sem.auth@example.com",
-        status: "solicitada",
+        status: "confirmada",
       }),
       expect.any(Object),
     );
   });
 
-  it("sends scheduled emails for requested and confirmed consultation creation statuses", async () => {
+  it("forces scheduled emails for psychologist-created consultations to confirmed status", async () => {
     const client = createMockClient({
       consultas: [],
       pacientes: [
@@ -958,7 +1268,7 @@ describe("consultation notifications", () => {
     expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenCalledTimes(2);
     expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ status: "solicitada" }),
+      expect.objectContaining({ status: "confirmada" }),
       expect.any(Object),
     );
     expect(emailMocks.sendPatientConsultationScheduledEmail).toHaveBeenNthCalledWith(

@@ -318,6 +318,21 @@ function buildConsultationEmailDetails(input, options = {}) {
     details.push({ label: "Valor", value: amountLabel });
   }
 
+  const paymentStatus = normalizeString(input.paymentStatus).toLowerCase();
+  const paymentLink = normalizeString(input.paymentLink);
+
+  if (paymentStatus === "aguardando_pagamento") {
+    details.push({ label: "Cobranca", value: "Aguardando pagamento pelo site" });
+
+    if (paymentLink) {
+      details.push({ label: "Link de pagamento", value: paymentLink });
+    }
+  } else if (paymentStatus === "pago") {
+    details.push({ label: "Cobranca", value: "Pagamento confirmado" });
+  } else if (paymentStatus === "nao_gerado") {
+    details.push({ label: "Cobranca", value: "Sem cobranca pelo site" });
+  }
+
   return details;
 }
 

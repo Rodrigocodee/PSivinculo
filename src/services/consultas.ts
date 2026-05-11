@@ -69,6 +69,7 @@ export type NovaConsulta = {
   valor_consulta?: number | string | null;
   duracao_consulta_min?: number | null;
   local_presencial?: string | null;
+  chargeMode?: "none" | "site" | null;
 };
 
 type ConsultationMutationApiResponse = {
@@ -357,12 +358,13 @@ export async function cadastrarConsulta(consulta: NovaConsulta) {
   const result = await postConsultationMutation(
     "/api/consultas/create",
     {
+      chargeMode: consulta.chargeMode === "site" ? "site" : "none",
       consulta: {
         clinica_id: scope.clinicId,
         psicologo_id: scope.psychologistId,
         paciente_id: consulta.paciente_id,
         data_consulta: consulta.data_consulta,
-        status: consulta.status,
+        status: "confirmada",
         observacoes: consulta.observacoes || null,
         modalidade_consulta: consultationModality,
         valor_consulta: consultationValue,

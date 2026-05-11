@@ -403,7 +403,7 @@ async function loadConsultationEmailContext(consultationId, env) {
   const { data: consultation, error: consultationError } = await client
     .from("consultas")
     .select(
-      "id, paciente_id, psicologo_id, data_consulta, data_consulta_solicitada_original, status, modalidade_consulta, local_presencial, valor_consulta",
+      "id, paciente_id, psicologo_id, data_consulta, data_consulta_solicitada_original, status, modalidade_consulta, local_presencial, valor_consulta, status_pagamento, asaas_invoice_url, asaas_bank_slip_url",
     )
     .eq("id", consultationId)
     .maybeSingle();
@@ -475,6 +475,11 @@ async function loadConsultationEmailContext(consultationId, env) {
       pickString(consultation, ["local_presencial"]),
     amount: pickString(consultation, ["valor_consulta"]),
     status: pickString(consultation, ["status"]),
+    paymentStatus: pickString(consultation, ["status_pagamento"]),
+    paymentLink:
+      pickString(consultation, ["asaas_invoice_url"]) ||
+      pickString(consultation, ["asaas_bank_slip_url"]),
+    bankSlipUrl: pickString(consultation, ["asaas_bank_slip_url"]),
     notificationPreferences,
   };
 }
@@ -783,6 +788,9 @@ export async function sendConsultationScheduledEmail({
     roomLink: emailContext.roomLink,
     amount: emailContext.amount,
     status: emailContext.status,
+    paymentStatus: emailContext.paymentStatus,
+    paymentLink: emailContext.paymentLink,
+    bankSlipUrl: emailContext.bankSlipUrl,
   };
 
   try {
@@ -1131,6 +1139,129 @@ async function maybeCreateConsultationPaymentAfterConfirmation({
   }
 }
 
+async function isConsultationSiteBillingEnabledForPsychologist({
+  client,
+  consultation,
+  authenticatedUser,
+}) {
+  const psychologistId = pickString(consultation, ["psicologo_id"]);
+  const authUserId = normalizeString(authenticatedUser?.id);
+
+  const lookupCandidates = [
+    psychologistId ? { column: "id", value: psychologistId } : null,
+    authUserId ? { column: "auth_id", value: authUserId } : null,
+  ].filter(Boolean);
+
+  for (const candidate of lookupCandidates) {
+    try {
+      const { data, error } = await client
+        .from("usuarios")
+        .select("id, auth_id, tipo_recebimento")
+        .eq(candidate.column, candidate.value)
+        .maybeSingle();
+
+      if (error) {
+        console.warn("[Psivinculo][consultation-payment][receivables_lookup_failed]", {
+          consultationId: pickString(consultation, ["id"]) || null,
+          psychologistId: psychologistId || null,
+          lookupColumn: candidate.column,
+          code: normalizeString(error.code) || "RECEIVABLES_LOOKUP_FAILED",
+          message: normalizeString(error.message) || "Receivables lookup failed",
+        });
+        continue;
+      }
+
+      if (pickString(data, ["tipo_recebimento"]) === "asaas_split") {
+        return true;
+      }
+    } catch (error) {
+      console.warn("[Psivinculo][consultation-payment][receivables_lookup_failed]", {
+        consultationId: pickString(consultation, ["id"]) || null,
+        psychologistId: psychologistId || null,
+        lookupColumn: candidate.column,
+        message: error instanceof Error ? error.message : "Unknown receivables lookup error",
+      });
+    }
+  }
+
+  return false;
+}
+
+async function maybeCreateConsultationPaymentForCreatedConsultation({
+  consultation,
+  chargeMode,
+  authenticatedUser,
+  env,
+  requestHeaders,
+}) {
+  const consultationId = pickString(consultation, ["id"]);
+  const normalizedChargeMode = normalizeString(chargeMode).toLowerCase();
+
+  if (!consultationId || normalizedChargeMode !== "site") {
+    return null;
+  }
+
+  const serviceClient = getServerSupabaseClient(env);
+  const canChargeThroughSite = await isConsultationSiteBillingEnabledForPsychologist({
+    client: serviceClient,
+    consultation,
+    authenticatedUser,
+  });
+
+  if (!canChargeThroughSite) {
+    console.info("[Psivinculo][consultation-payment][skipped_after_creation_receivables_disabled]", {
+      consultationId,
+      psychologistId: pickString(consultation, ["psicologo_id"]) || null,
+      chargeMode: normalizedChargeMode,
+    });
+
+    return null;
+  }
+
+  try {
+    return await createConsultationPayment(
+      {
+        consultaId: consultationId,
+      },
+      {
+        env,
+        requestHeaders,
+      },
+    );
+  } catch (error) {
+    console.error("[Psivinculo][consultation-payment][create_failed_after_creation]", {
+      consultationId,
+      code: error instanceof HttpError ? error.code : "CONSULTATION_PAYMENT_CREATE_FAILED",
+      message: error instanceof Error ? error.message : "Unknown consultation payment error",
+    });
+
+    return {
+      consultationId,
+      paymentMode: "asaas_split",
+      paymentStatus: "erro",
+      created: false,
+      reusedExisting: false,
+      success: false,
+      asaasPaymentId: null,
+      invoiceUrl: null,
+      bankSlipUrl: null,
+      billingType: null,
+      externalReference: consultationId,
+      splitSent: false,
+      walletIdMasked: null,
+      payoutPercentage: 95,
+      message:
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Nao foi possivel gerar a cobranca da consulta no Asaas.",
+      errorCode:
+        error instanceof HttpError && error.code
+          ? error.code
+          : "CONSULTATION_PAYMENT_CREATE_FAILED",
+    };
+  }
+}
+
 export async function createConsultaAndNotify(payload, options = {}) {
   const env = options.env || process.env;
   const requestHeaders = options.requestHeaders || {};
@@ -1148,9 +1279,7 @@ export async function createConsultaAndNotify(payload, options = {}) {
     });
   }
 
-  if (!normalizeString(insert.status)) {
-    insert.status = "pendente";
-  }
+  insert.status = "confirmada";
 
   const { authenticatedUser, userClient } = await resolveAuthenticatedRequestContext(requestHeaders, env);
   await assertProfessionalAccessForAuthenticatedUser(
@@ -1174,7 +1303,21 @@ export async function createConsultaAndNotify(payload, options = {}) {
     });
   }
 
-  const consultation = data;
+  let consultation = data;
+  const payment = await maybeCreateConsultationPaymentForCreatedConsultation({
+    consultation,
+    chargeMode: payload?.chargeMode,
+    authenticatedUser,
+    env,
+    requestHeaders,
+  });
+
+  if (payment?.created || payment?.reusedExisting || payment?.paymentStatus === "erro") {
+    consultation =
+      (await loadConsultaSnapshot(getServerSupabaseClient(env), pickString(consultation, ["id"]))) ||
+      consultation;
+  }
+
   const email = await sendConsultationScheduledEmail({
     consultationId: pickString(consultation, ["id"]),
     consultation,
@@ -1186,7 +1329,7 @@ export async function createConsultaAndNotify(payload, options = {}) {
   return {
     consultation,
     email,
-    payment: null,
+    payment,
   };
 }
 

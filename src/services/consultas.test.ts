@@ -380,12 +380,57 @@ describe("consultas service", () => {
       }),
     );
     expect(getLastFetchBody(fetchMock)).toEqual({
+      chargeMode: "none",
       consulta: expect.objectContaining({
         paciente_id: "paciente-1",
         psicologo_id: "psi-1",
         clinica_id: "clinic-1",
+        status: "confirmada",
         valor_consulta: 100,
         duracao_consulta_min: 50,
+      }),
+    });
+  });
+
+  it("forces psychologist-created appointments to confirmed status before sending them to the backend", async () => {
+    mockCreateConsultationResponse(fetchMock, {
+      paciente_id: "paciente-status",
+      status: "confirmada",
+    });
+
+    await cadastrarConsulta({
+      paciente_id: "paciente-status",
+      data_consulta: "2099-05-11T15:00:00",
+      status: "solicitada",
+    });
+
+    expect(getLastFetchBody(fetchMock)).toEqual({
+      chargeMode: "none",
+      consulta: expect.objectContaining({
+        paciente_id: "paciente-status",
+        status: "confirmada",
+      }),
+    });
+  });
+
+  it("sends the site charge mode only when the psychologist chose to charge through the site", async () => {
+    mockCreateConsultationResponse(fetchMock, {
+      paciente_id: "paciente-cobranca",
+      status: "confirmada",
+    });
+
+    await cadastrarConsulta({
+      paciente_id: "paciente-cobranca",
+      data_consulta: "2099-05-11T16:00:00",
+      status: "confirmada",
+      chargeMode: "site",
+    });
+
+    expect(getLastFetchBody(fetchMock)).toEqual({
+      chargeMode: "site",
+      consulta: expect.objectContaining({
+        paciente_id: "paciente-cobranca",
+        status: "confirmada",
       }),
     });
   });
@@ -432,6 +477,7 @@ describe("consultas service", () => {
 
     expect(mocks.getCurrentPsychologistConsultationSettings).toHaveBeenCalledTimes(1);
     expect(getLastFetchBody(fetchMock)).toEqual({
+      chargeMode: "none",
       consulta: expect.objectContaining({
         paciente_id: "paciente-2",
         valor_consulta: 100,
@@ -455,6 +501,7 @@ describe("consultas service", () => {
     expect(mocks.getPsychologistConsultationSettingsById).not.toHaveBeenCalled();
     expect(mocks.getCurrentPsychologistConsultationSettings).not.toHaveBeenCalled();
     expect(getLastFetchBody(fetchMock)).toEqual({
+      chargeMode: "none",
       consulta: expect.objectContaining({
         paciente_id: "paciente-3",
         valor_consulta: 150.5,
